@@ -1,5 +1,6 @@
 from datetime import datetime
-
+from tools.system_tools import SystemTools
+from tools.file_tools import FileTools
 
 class CommandRouter:
 
@@ -17,6 +18,12 @@ class CommandRouter:
 
         if command in ["who are you", "what are you", "your name"]:
             return self.identity()
+        
+        if command in ["system", "system info", "system information"]:
+            return self.system_info()
+        
+        if command in ["list files", "files", "show files"]:
+            return self.list_files()
 
         return None
 
@@ -32,12 +39,22 @@ class CommandRouter:
             "  • help\n"
             "  • exit"
         )
+    
+    def system_info(self):
+        info = SystemTools.get_system_info()
+
+        return (
+            f"System: {info['system']}\n"
+            f"Release: {info['release']}\n"
+            f"Machine: {info['machine']}\n"
+            f"Processor: {info['processor']}"
+        )
 
     def current_time(self):
-        current_time = datetime.now().strftime("%I:%M:%S %p")
-        return f"The current time is {current_time}."
+        return f"The current time is {SystemTools.get_time()}."
 
     def identity(self):
         return "I am JARVIS, your personal AI system."
 
-        
+    def list_files(self):
+        return FileTools.list_files()
