@@ -1,9 +1,13 @@
 from datetime import datetime
 from tools.system_tools import SystemTools
 from tools.file_tools import FileTools
+from memory.memory_manager import MemoryManager
 
 class CommandRouter:
-
+    
+    def __init__(self):
+        self.memory = MemoryManager()
+        
     def route(self, user_input):
         command = user_input.lower().strip()
 
@@ -24,6 +28,30 @@ class CommandRouter:
         
         if command in ["list files", "files", "show files"]:
             return self.list_files()
+        
+        if command == "memories":
+            return self.memory.get_all()
+        
+        if command.startswith("remember "):
+            content = user_input[9:].strip()
+
+            if "=" in content:
+                key, value = content.split("=", 1)
+
+                return self.memory.remember(
+                    key.strip(),
+                    value.strip()
+                )
+
+            return "Use: remember key = value"
+
+        if command.startswith("recall "):
+            key = user_input[7:].strip()
+            return self.memory.recall(key)
+
+        if command.startswith("forget "):
+            key = user_input[7:].strip()
+            return self.memory.forget(key)
 
         return None
 
@@ -58,3 +86,4 @@ class CommandRouter:
 
     def list_files(self):
         return FileTools.list_files()
+    
