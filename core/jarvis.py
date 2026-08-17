@@ -1,7 +1,11 @@
+from .router import CommandRouter
+
+
 class Jarvis:
     def __init__(self):
         self.name = "JARVIS"
-        self.version = "0.1.0"
+        self.version = "0.1.1"
+        self.router = CommandRouter()
 
     def start(self):
         print("=" * 50)
@@ -9,6 +13,7 @@ class Jarvis:
         print("=" * 50)
         print(f"Version: {self.version}")
         print("Status : ONLINE")
+        print("Type 'help' for commands.")
         print("Type 'exit' to shutdown.\n")
 
         while True:
@@ -25,4 +30,12 @@ class Jarvis:
             print(f"JARVIS: {response}\n")
 
     def process(self, user_input):
-        return f"I received: {user_input}"
+        response = self.router.route(user_input)
+
+        if response is not None:
+            return response
+
+        return (
+            "I don't understand that command yet. "
+            "Type 'help' to see what I can currently do."
+        )
