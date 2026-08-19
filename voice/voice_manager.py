@@ -47,6 +47,7 @@ class VoiceManager:
         volume: float = 1.0,
     ) -> None:
         self.recognizer = recognizer or sr.Recognizer()
+        self._adaptive_listen = recorder is None
         self._recorder = recorder or sd.rec
         self._wait_for_recording = wait_for_recording or sd.wait
         self._engine_factory = engine_factory or pyttsx3.init
@@ -55,10 +56,11 @@ class VoiceManager:
         self.volume = max(0.0, min(1.0, float(volume)))
 
     def listen(self, duration: float = 5.0, sample_rate: int = 16000) -> str:
-        """Capture microphone audio for a fixed duration and return recognised text.
+        """Capture microphone audio and return recognised text.
 
-        This method remains available for compatibility and tests. The desktop
-        runtime uses ``listen_until_silence`` for lower-latency voice commands.
+        With the real microphone this is adaptive: recording ends shortly after
+        speech stops, while ``duration`` acts as a safety cap. Injected recorders
+        keep the fixed-duration path so existing tests and callers remain stable.
         """
         duration = float(duration)
         sample_rate = int(sample_rate)
@@ -67,6 +69,12 @@ class VoiceManager:
             raise ValueError("duration must be greater than zero")
         if sample_rate <= 0:
             raise ValueError("sample_rate must be greater than zero")
+
+        if self._adaptive_listen:
+            return self.listen_until_silence(
+                sample_rate=sample_rate,
+                max_duration=duration,
+            )
 
         try:
             recording = self._recorder(
@@ -147,8 +155,6 @@ class VoiceManager:
                 done.set()
 
             if status:
-                # PortAudio status flags are informational here; a hard stream
-                # error will still surface from the context manager below.
                 pass
 
         blocksize = max(256, int(sample_rate * 0.05))
