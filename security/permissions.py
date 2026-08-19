@@ -15,6 +15,7 @@ class PermissionLevel(str, Enum):
 
 class PermissionDecision(str, Enum):
     ALLOW = "allow"
+    ALLOW_SESSION = "allow_session"
     DENY = "deny"
 
 
@@ -32,25 +33,50 @@ Approver = Callable[[PermissionRequest], bool | PermissionDecision]
 class PermissionManager:
     """Central policy for deciding whether a tool may execute.
 
-    SAFE tools run automatically. Any higher-risk tool requires an explicit
-    approver. If no approver is configured, the action is denied by default.
+    SAFE tools run automatically. CONFIRM tools may be approved once or for the
+    current JARVIS session. DESTRUCTIVE tools always require a fresh approval and
+    can never be silently trusted for the session.
     """
 
     def __init__(self, approver: Approver | None = None) -> None:
         self._approver = approver
+        self._session_grants: set[str] = set()
 
     def set_approver(self, approver: Approver | None) -> None:
         self._approver = approver
+
+    def clear_session_grants(self) -> None:
+        self._session_grants.clear()
+
+    def is_session_granted(self, tool_name: str) -> bool:
+        return tool_name in self._session_grants
 
     def authorize(self, request: PermissionRequest) -> PermissionDecision:
         if request.level == PermissionLevel.SAFE:
             return PermissionDecision.ALLOW
 
+        if (
+            request.level == PermissionLevel.CONFIRM
+            and request.tool_name in self._session_grants
+        ):
+            return PermissionDecision.ALLOW
+
         if self._approver is None:
             return PermissionDecision.DENY
 
-        decision = self._approver(request)
-        if isinstance(decision, PermissionDecision):
-            return decision
+        raw_decision = self._approver(request)
+        if isinstance(raw_decision, PermissionDecision):
+            decision = raw_decision
+        else:
+            decision = (
+                PermissionDecision.ALLOW
+                if raw_decision
+                else PermissionDecision.DENY
+            )
 
-        return PermissionDecision.ALLOW if decision else PermissionDecision.DENY
+        if decision == PermissionDecision.ALLOW_SESSION:
+            if request.level == PermissionLevel.CONFIRM:
+                self._session_grants.add(request.tool_name)
+            return PermissionDecision.ALLOW
+
+        return decision
