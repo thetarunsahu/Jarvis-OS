@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from array import array
@@ -10,6 +11,7 @@ from typing import Any, Callable
 import pyttsx3
 import sounddevice as sd
 
+from voice.audio_service import AudioInputService, get_audio_input_service
 from voice.stt_providers import (
     FasterWhisperProvider,
     GoogleSpeechProvider,
@@ -37,10 +39,12 @@ class VoiceRecognitionUnavailable(VoiceError):
 class VoiceManager:
     """Blocking voice primitives used by background workers.
 
-    The real microphone path uses adaptive speech gating before STT. A short
-    ambient-noise estimate, consecutive speech frames, minimum voiced duration,
-    and pre-roll are used together so fan noise or one loud click does not become
-    a command while the beginning of a real utterance is preserved.
+    Production command capture reads from the same process-wide microphone
+    service as wake-word detection. There is no close/reopen gap after "Hey
+    Jarvis", so the start of the command is far less likely to be lost.
+
+    Injected recorders/stream factories remain supported for tests and fallback
+    compatibility.
     """
 
     def __init__(
@@ -51,6 +55,7 @@ class VoiceManager:
         wait_for_recording: WaitForRecording | None = None,
         engine_factory: EngineFactory | None = None,
         stream_factory: StreamFactory | None = None,
+        audio_service: AudioInputService | None = None,
         rate: int = 175,
         volume: float = 1.0,
     ) -> None:
@@ -66,6 +71,15 @@ class VoiceManager:
         self._wait_for_recording = wait_for_recording or sd.wait
         self._engine_factory = engine_factory or pyttsx3.init
         self._stream_factory = stream_factory or sd.RawInputStream
+        self._audio_service = (
+            audio_service
+            if audio_service is not None
+            else (
+                get_audio_input_service()
+                if recorder is None and stream_factory is None
+                else None
+            )
+        )
         self.rate = int(rate)
         self.volume = max(0.0, min(1.0, float(volume)))
 
@@ -122,7 +136,7 @@ class VoiceManager:
         sample_rate: int = 16000,
         start_timeout: float = 2.5,
         max_duration: float = 8.0,
-        silence_duration: float = 0.65,
+        silence_duration: float = 0.55,
         energy_threshold: int = 450,
         noise_multiplier: float = 2.2,
         speech_start_frames: int = 3,
@@ -131,13 +145,7 @@ class VoiceManager:
         pre_roll_frames: int = 6,
         stage_callback: StageCallback | None = None,
     ) -> str:
-        """Listen until speech ends while rejecting short/noisy false starts.
-
-        Audio is processed in ~50 ms frames. The first few frames estimate the
-        ambient level. Speech must then remain above an adaptive threshold for
-        several consecutive frames before capture begins. This avoids sending
-        random room noise to Whisper and then to the language model.
-        """
+        """Listen until speech ends while rejecting short/noisy false starts."""
         sample_rate = int(sample_rate)
         start_timeout = float(start_timeout)
         max_duration = float(max_duration)
@@ -170,6 +178,206 @@ class VoiceManager:
         if warmup_frames < 0 or pre_roll_frames < 1:
             raise ValueError("invalid warmup/pre-roll frame configuration")
 
+        if self._audio_service is not None:
+            if self._audio_service.sample_rate != sample_rate:
+                raise VoiceError(
+                    "Shared microphone sample rate does not match voice capture"
+                )
+            return self._listen_from_audio_service(
+                sample_rate=sample_rate,
+                start_timeout=start_timeout,
+                max_duration=max_duration,
+                silence_duration=silence_duration,
+                energy_threshold=energy_threshold,
+                noise_multiplier=noise_multiplier,
+                speech_start_frames=speech_start_frames,
+                minimum_voice_frames=minimum_voice_frames,
+                pre_roll_frames=pre_roll_frames,
+                stage_callback=stage_callback,
+            )
+
+        return self._listen_from_legacy_stream(
+            sample_rate=sample_rate,
+            start_timeout=start_timeout,
+            max_duration=max_duration,
+            silence_duration=silence_duration,
+            energy_threshold=energy_threshold,
+            noise_multiplier=noise_multiplier,
+            speech_start_frames=speech_start_frames,
+            minimum_voice_frames=minimum_voice_frames,
+            warmup_frames=warmup_frames,
+            pre_roll_frames=pre_roll_frames,
+            stage_callback=stage_callback,
+        )
+
+    def _listen_from_audio_service(
+        self,
+        *,
+        sample_rate: int,
+        start_timeout: float,
+        max_duration: float,
+        silence_duration: float,
+        energy_threshold: int,
+        noise_multiplier: float,
+        speech_start_frames: int,
+        minimum_voice_frames: int,
+        pre_roll_frames: int,
+        stage_callback: StageCallback | None,
+    ) -> str:
+        service = self._audio_service
+        if service is None:
+            return ""
+
+        try:
+            wake_sequence = service.claim_recent_wake(max_age=2.0)
+            latest = service.latest_sequence()
+        except Exception as error:
+            raise VoiceError(f"Microphone capture failed: {error}") from error
+
+        activated_by_wake = wake_sequence is not None
+        cursor = max(0, wake_sequence - 1) if wake_sequence is not None else latest
+
+        frame_duration = service.frame_duration
+        start_frames_required = max(
+            speech_start_frames,
+            int(math.ceil(0.08 / frame_duration)),
+        )
+        voice_frames_required = max(
+            minimum_voice_frames,
+            int(math.ceil(0.16 / frame_duration)),
+        )
+        effective_pre_roll = max(
+            pre_roll_frames,
+            int(math.ceil(0.12 / frame_duration)),
+        )
+
+        chunks: list[bytes] = []
+        pre_roll: deque[bytes] = deque(maxlen=effective_pre_roll)
+        ambient_levels: deque[int] = deque(maxlen=32)
+
+        try:
+            recent = service.recent_frames(
+                seconds=0.5,
+                before_sequence=cursor,
+            )
+        except Exception:
+            recent = ()
+
+        seed_levels = sorted(frame.rms for frame in recent if frame.rms > 0)
+        if seed_levels:
+            quiet_count = max(1, len(seed_levels) // 2)
+            ambient_levels.extend(seed_levels[:quiet_count])
+
+        started_at = time.monotonic()
+        speech_started = False
+        last_voice_at: float | None = None
+        candidate_voice_frames = 0
+        voiced_frames = 0
+
+        while True:
+            now = time.monotonic()
+            elapsed = now - started_at
+            if elapsed >= max_duration:
+                break
+            if not speech_started and elapsed >= start_timeout:
+                break
+            if (
+                speech_started
+                and last_voice_at is not None
+                and now - last_voice_at >= silence_duration
+            ):
+                break
+
+            try:
+                frame = service.read_after(cursor, timeout=0.12)
+            except Exception as error:
+                raise VoiceError(f"Microphone capture failed: {error}") from error
+
+            if frame is None:
+                continue
+
+            cursor = frame.sequence
+            rms = frame.rms
+            pre_roll.append(frame.pcm)
+
+            noise_floor, adaptive_threshold = self._thresholds(
+                ambient_levels,
+                energy_threshold=energy_threshold,
+                noise_multiplier=noise_multiplier,
+            )
+            self.last_noise_floor = noise_floor
+            self.last_energy_threshold = adaptive_threshold
+
+            if not speech_started:
+                if rms >= adaptive_threshold:
+                    candidate_voice_frames += 1
+                    if candidate_voice_frames >= start_frames_required:
+                        speech_started = True
+                        voiced_frames = candidate_voice_frames
+                        last_voice_at = frame.captured_at
+                        chunks.extend(pre_roll)
+                else:
+                    candidate_voice_frames = 0
+                    if rms <= max(
+                        energy_threshold,
+                        int(adaptive_threshold * 0.8),
+                    ):
+                        ambient_levels.append(rms)
+                continue
+
+            chunks.append(frame.pcm)
+            release_threshold = max(
+                energy_threshold,
+                int(adaptive_threshold * 0.70),
+            )
+            if rms >= release_threshold:
+                voiced_frames += 1
+                last_voice_at = frame.captured_at
+
+        if not speech_started:
+            self.last_capture_rejection = "no_sustained_speech"
+            return ""
+
+        if voiced_frames < voice_frames_required:
+            self.last_capture_rejection = "speech_too_short"
+            return ""
+
+        audio_bytes = b"".join(chunks)
+        if not audio_bytes:
+            self.last_capture_rejection = "empty_audio"
+            return ""
+
+        self._emit_stage(stage_callback, "transcribing")
+        transcript = self._recognize_pcm(
+            audio_bytes,
+            sample_rate,
+            stage_callback,
+        )
+        if activated_by_wake:
+            transcript = self._strip_wake_prefix(transcript)
+
+        if not transcript:
+            self.last_capture_rejection = (
+                getattr(self.stt_provider, "last_rejection", None)
+                or "stt_rejected"
+            )
+        return transcript
+
+    def _listen_from_legacy_stream(
+        self,
+        *,
+        sample_rate: int,
+        start_timeout: float,
+        max_duration: float,
+        silence_duration: float,
+        energy_threshold: int,
+        noise_multiplier: float,
+        speech_start_frames: int,
+        minimum_voice_frames: int,
+        warmup_frames: int,
+        pre_roll_frames: int,
+        stage_callback: StageCallback | None,
+    ) -> str:
         chunks: list[bytes] = []
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_frames)
         ambient_levels: deque[int] = deque(maxlen=24)
@@ -195,16 +403,11 @@ class VoiceManager:
             frame_count += 1
             pre_roll.append(chunk)
 
-            if ambient_levels:
-                noise_floor = int(median(ambient_levels))
-                adaptive_threshold = max(
-                    energy_threshold,
-                    int(noise_floor * noise_multiplier) + 80,
-                )
-            else:
-                noise_floor = 0
-                adaptive_threshold = energy_threshold
-
+            noise_floor, adaptive_threshold = self._thresholds(
+                ambient_levels,
+                energy_threshold=energy_threshold,
+                noise_multiplier=noise_multiplier,
+            )
             self.last_noise_floor = noise_floor
             self.last_energy_threshold = adaptive_threshold
 
@@ -221,9 +424,10 @@ class VoiceManager:
                         chunks.extend(pre_roll)
                 else:
                     candidate_voice_frames = 0
-                    # Only learn from quiet frames. This prevents a spoken word
-                    # from raising the ambient baseline before capture starts.
-                    if rms <= max(energy_threshold, int(adaptive_threshold * 0.8)):
+                    if rms <= max(
+                        energy_threshold,
+                        int(adaptive_threshold * 0.8),
+                    ):
                         ambient_levels.append(rms)
 
                 if not speech_started and now - started_at >= start_timeout:
@@ -286,6 +490,42 @@ class VoiceManager:
                 or "stt_rejected"
             )
         return transcript
+
+    @staticmethod
+    def _thresholds(
+        ambient_levels: deque[int],
+        *,
+        energy_threshold: int,
+        noise_multiplier: float,
+    ) -> tuple[int, int]:
+        if ambient_levels:
+            noise_floor = int(median(ambient_levels))
+            adaptive_threshold = max(
+                energy_threshold,
+                int(noise_floor * noise_multiplier) + 80,
+            )
+        else:
+            noise_floor = 0
+            adaptive_threshold = energy_threshold
+        return noise_floor, adaptive_threshold
+
+    @staticmethod
+    def _strip_wake_prefix(text: str) -> str:
+        value = str(text).strip()
+        lowered = value.lower()
+        prefixes = (
+            "hey jarvis",
+            "hey, jarvis",
+            "hi jarvis",
+            "hello jarvis",
+            "हे जार्विस",
+            "हाय जार्विस",
+        )
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                value = value[len(prefix) :].lstrip(" ,:-—")
+                break
+        return value.strip()
 
     def _recognize_pcm(
         self,
