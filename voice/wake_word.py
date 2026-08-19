@@ -27,12 +27,13 @@ class WakeDetection:
 class WakeWordDetector:
     """Low-latency local wake-word detection using openWakeWord.
 
-    Audio remains local. To avoid random speech triggering JARVIS, detection now
-    requires repeated high-confidence evidence rather than a single score spike.
+    Detection requires consecutive target-model hits. This is stricter than a
+    single-score trigger, but the default threshold is kept low enough that a
+    normal "Hey Jarvis" is still practical on laptop microphones.
 
     Environment overrides:
       JARVIS_WAKE_WORD=hey_jarvis
-      JARVIS_WAKE_THRESHOLD=0.82
+      JARVIS_WAKE_THRESHOLD=0.70
       JARVIS_WAKE_VAD_THRESHOLD=0.55
       JARVIS_WAKE_REQUIRED_HITS=2
     """
@@ -54,7 +55,7 @@ class WakeWordDetector:
         self.threshold = float(
             threshold
             if threshold is not None
-            else os.getenv("JARVIS_WAKE_THRESHOLD", "0.82")
+            else os.getenv("JARVIS_WAKE_THRESHOLD", "0.70")
         )
         self.vad_threshold = float(
             vad_threshold
@@ -127,7 +128,9 @@ class WakeWordDetector:
                     if score >= self.threshold:
                         strong_hits += 1
                     else:
-                        strong_hits = max(0, strong_hits - 1)
+                        # Confirmation must be consecutive. A random isolated
+                        # spike cannot be carried forward into a later frame.
+                        strong_hits = 0
 
                     if strong_hits >= self.required_hits:
                         try:
@@ -201,15 +204,15 @@ class WakeWordDetector:
 
             numeric_scores.append(score)
             key = str(name).lower().replace("-", "_").replace(" ", "_")
-            if target in key or key in target or "jarvis" in key:
+            if target in key or key in target:
                 matched_scores.append(score)
 
         if matched_scores:
             return max(matched_scores)
 
         # A single-model custom/test detector has no ambiguity. With multiple
-        # unknown model scores, refusing to guess is safer than waking on the
-        # highest unrelated score.
+        # unknown model scores, refusing to guess is safer than waking on an
+        # unrelated model.
         if len(numeric_scores) == 1:
             return numeric_scores[0]
         return 0.0
