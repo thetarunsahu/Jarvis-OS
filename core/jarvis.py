@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.events import EventBus
 from core.orchestrator import JarvisOrchestrator
+from core.state import JarvisState
 from security.permissions import Approver, PermissionDecision, PermissionRequest
 
 
@@ -21,12 +22,15 @@ class Jarvis:
     def process(self, user_input: str) -> str:
         return self.orchestrator.process(user_input)
 
+    def set_runtime_state(self, state: JarvisState) -> None:
+        """Expose modality states such as LISTENING and SPEAKING to clients."""
+        self.orchestrator.set_state(state)
+
     def set_permission_approver(self, approver: Approver | None) -> None:
         """Attach a client-specific approval callback for side-effecting tools."""
         self.orchestrator.set_permission_approver(approver)
 
     def subscribe(self, event_name: str, callback) -> None:
-        """Subscribe UI/voice clients without exposing the EventBus directly."""
         self.events.subscribe(event_name, callback)
 
     def unsubscribe(self, event_name: str, callback) -> None:
