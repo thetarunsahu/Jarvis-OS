@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-import os
-import tempfile
 import threading
 import time
-import wave
 from array import array
 from typing import Any, Callable
 
 import pyttsx3
 import sounddevice as sd
-import speech_recognition as sr
+
+from voice.stt_providers import (
+    FasterWhisperProvider,
+    GoogleSpeechProvider,
+    SpeechToTextProvider,
+    STTError,
+    STTUnavailable,
+)
 
 
 Recorder = Callable[..., Any]
@@ -25,7 +29,7 @@ class VoiceError(RuntimeError):
 
 
 class VoiceRecognitionUnavailable(VoiceError):
-    """Raised when the configured speech-recognition service is unavailable."""
+    """Raised when the configured speech-recognition engine is unavailable."""
 
 
 class VoiceManager:
@@ -33,13 +37,16 @@ class VoiceManager:
 
     This class intentionally contains no Qt code. The desktop interface is
     responsible for calling ``listen`` / ``listen_until_silence`` and ``speak``
-    off the GUI thread. pyttsx3 is initialised lazily inside ``speak`` so its
-    Windows COM objects are created on the same worker thread that uses them.
+    off the GUI thread. Local faster-whisper STT is the default and is loaded
+    lazily on first use, then kept resident for later commands. Passing a custom
+    ``recognizer`` preserves the previous Google SpeechRecognition path for tests
+    or an explicitly configured online fallback.
     """
 
     def __init__(
         self,
         recognizer: Any | None = None,
+        stt_provider: SpeechToTextProvider | None = None,
         recorder: Recorder | None = None,
         wait_for_recording: WaitForRecording | None = None,
         engine_factory: EngineFactory | None = None,
@@ -47,7 +54,13 @@ class VoiceManager:
         rate: int = 175,
         volume: float = 1.0,
     ) -> None:
-        self.recognizer = recognizer or sr.Recognizer()
+        if stt_provider is not None:
+            self.stt_provider = stt_provider
+        elif recognizer is not None:
+            self.stt_provider = GoogleSpeechProvider(recognizer=recognizer)
+        else:
+            self.stt_provider = FasterWhisperProvider()
+
         self._adaptive_listen = recorder is None
         self._recorder = recorder or sd.rec
         self._wait_for_recording = wait_for_recording or sd.wait
@@ -102,7 +115,7 @@ class VoiceManager:
             raise VoiceError(f"Audio buffer conversion failed: {error}") from error
 
         self._emit_stage(stage_callback, "transcribing")
-        return self._recognize_pcm(audio_bytes, sample_rate)
+        return self._recognize_pcm(audio_bytes, sample_rate, stage_callback)
 
     def listen_until_silence(
         self,
@@ -186,38 +199,30 @@ class VoiceManager:
             return ""
 
         self._emit_stage(stage_callback, "transcribing")
-        return self._recognize_pcm(b"".join(chunks), sample_rate)
+        return self._recognize_pcm(
+            b"".join(chunks),
+            sample_rate,
+            stage_callback,
+        )
 
-    def _recognize_pcm(self, audio_bytes: bytes, sample_rate: int) -> str:
-        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
-
+    def _recognize_pcm(
+        self,
+        audio_bytes: bytes,
+        sample_rate: int,
+        stage_callback: StageCallback | None = None,
+    ) -> str:
         try:
-            with wave.open(temp_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(audio_bytes)
-
-            with sr.AudioFile(temp_path) as source:
-                audio = self.recognizer.record(source)
-
-            try:
-                text = self.recognizer.recognize_google(audio)
-            except sr.UnknownValueError:
-                return ""
-            except sr.RequestError as error:
-                raise VoiceRecognitionUnavailable(
-                    f"Speech recognition service failed: {error}"
-                ) from error
-
-            return str(text).strip()
-        finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+            return self.stt_provider.transcribe_pcm(
+                audio_bytes,
+                sample_rate,
+                stage_callback=stage_callback,
+            ).strip()
+        except STTUnavailable as error:
+            raise VoiceRecognitionUnavailable(str(error)) from error
+        except STTError as error:
+            raise VoiceError(str(error)) from error
+        except Exception as error:
+            raise VoiceError(f"Speech recognition failed: {error}") from error
 
     @staticmethod
     def _emit_stage(
