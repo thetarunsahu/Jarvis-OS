@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from core.events import EventBus
 from providers.ollama_provider import OllamaProvider
 from security.permissions import Approver
@@ -31,6 +33,39 @@ class Brain:
             executor=self.tools.execute,
             event_handler=self._handle_event,
         )
+
+    def execute_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a known tool outside the model loop while preserving events.
+
+        This is used for high-confidence deterministic commands such as
+        "set volume to 30%". It avoids depending on the language model to decide
+        whether a clearly matching local capability exists, while permissions
+        are still enforced by ToolRegistry.
+        """
+
+        payload = arguments or {}
+        self._handle_event(
+            "tool_started",
+            {
+                "tool_name": tool_name,
+                "arguments": payload,
+                "source": "deterministic_router",
+            },
+        )
+        result = self.tools.execute(tool_name, payload)
+        self._handle_event(
+            "tool_finished",
+            {
+                "tool_name": tool_name,
+                "result": result,
+                "source": "deterministic_router",
+            },
+        )
+        return result
 
     def clear_conversation(self) -> None:
         self.provider.clear_history()
