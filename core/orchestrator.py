@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.events import EventBus
+from core.events import EventBus, JarvisEvent
 from core.router import CommandRouter
 from core.state import JarvisState
 
@@ -9,7 +9,8 @@ class JarvisOrchestrator:
     """Central entry point for JARVIS requests.
 
     UI, CLI, and voice layers should call this class instead of talking to
-    providers/tools directly. It owns runtime state and emits observable events.
+    providers or tools directly. It owns runtime state and emits observable
+    events that the interface can subscribe to.
     """
 
     def __init__(
@@ -17,9 +18,13 @@ class JarvisOrchestrator:
         router: CommandRouter | None = None,
         events: EventBus | None = None,
     ) -> None:
-        self.router = router or CommandRouter()
         self.events = events or EventBus()
+        self.router = router or CommandRouter(events=self.events)
         self.state = JarvisState.READY
+
+        self.events.subscribe("tool_started", self._on_tool_started)
+        self.events.subscribe("tool_finished", self._on_tool_finished)
+        self.events.subscribe("agent_limit_reached", self._on_agent_limit_reached)
 
     def set_state(self, state: JarvisState) -> None:
         if state == self.state:
@@ -35,7 +40,6 @@ class JarvisOrchestrator:
 
     def process(self, user_input: str) -> str:
         text = user_input.strip()
-
         if not text:
             return ""
 
@@ -64,3 +68,12 @@ class JarvisOrchestrator:
                 message=str(error),
             )
             return "I hit an internal error while processing that request."
+
+    def _on_tool_started(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.EXECUTING)
+
+    def _on_tool_finished(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.VERIFYING)
+
+    def _on_agent_limit_reached(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.ERROR)
