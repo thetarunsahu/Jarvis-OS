@@ -1,13 +1,31 @@
-from .router import CommandRouter
+from __future__ import annotations
+
+from core.events import EventBus
+from core.orchestrator import JarvisOrchestrator
 
 
 class Jarvis:
-    def __init__(self):
-        self.name = "JARVIS"
-        self.version = "0.1.1"
-        self.router = CommandRouter()
+    """Public JARVIS application service used by CLI, GUI, and voice clients."""
 
-    def start(self):
+    def __init__(self) -> None:
+        self.name = "JARVIS"
+        self.version = "0.2.0-dev"
+        self.events = EventBus()
+        self.orchestrator = JarvisOrchestrator(events=self.events)
+
+    @property
+    def state(self):
+        return self.orchestrator.state
+
+    def process(self, user_input: str) -> str:
+        return self.orchestrator.process(user_input)
+
+    def start(self) -> None:
+        """Run the legacy terminal interface.
+
+        The CLI is intentionally thin: all request handling goes through the
+        same orchestrator that the desktop HUD and voice interface will use.
+        """
         print("=" * 50)
         print("                 J A R V I S")
         print("=" * 50)
@@ -28,14 +46,3 @@ class Jarvis:
 
             response = self.process(user_input)
             print(f"JARVIS: {response}\n")
-
-    def process(self, user_input):
-        response = self.router.route(user_input)
-
-        if response is not None:
-            return response
-
-        return (
-            "I don't understand that command yet. "
-            "Type 'help' to see what I can currently do."
-        )
