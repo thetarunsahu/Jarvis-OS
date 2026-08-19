@@ -70,6 +70,30 @@ def test_wake_detector_requires_repeated_high_scores():
     assert stages == ["wake_loading", "wake_armed", "wake_detected"]
 
 
+def test_wake_detector_resets_confirmation_after_a_miss():
+    model = FakeModel([
+        {"hey_jarvis": 0.71},
+        {"hey_jarvis": 0.72},
+        {"hey_jarvis": 0.10},
+        {"hey_jarvis": 0.73},
+        {"hey_jarvis": 0.74},
+        {"hey_jarvis": 0.75},
+    ])
+    stream = FakeStream([pcm_chunk() for _ in range(6)])
+
+    detector = WakeWordDetector(
+        threshold=0.70,
+        required_hits=3,
+        model_factory=lambda: model,
+        stream_factory=lambda **kwargs: stream,
+    )
+
+    result = detector.wait_for_wake_word(threading.Event())
+
+    assert result is not None
+    assert result.score == pytest.approx(0.75)
+
+
 def test_extract_score_refuses_ambiguous_unknown_models():
     detector = WakeWordDetector(
         model_factory=lambda: FakeModel([]),
@@ -77,6 +101,12 @@ def test_extract_score_refuses_ambiguous_unknown_models():
     )
 
     assert detector._extract_score({"alexa": 0.99, "computer": 0.95}) == 0.0
+
+
+def test_extract_score_refuses_unknown_single_production_model():
+    detector = WakeWordDetector()
+
+    assert detector._extract_score({"alexa": 0.99}) == 0.0
 
 
 def test_wake_detector_returns_none_when_already_stopped():
