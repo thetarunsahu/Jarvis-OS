@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.workspace import WorkspaceContext
+
 
 class FileTools:
     """Read-only file inspection primitives used by JARVIS tools."""
@@ -55,22 +57,9 @@ class FileTools:
         path: str,
         workspace_root: str | Path | None = None,
     ) -> Path:
-        """Resolve a file path and reject traversal outside the active workspace."""
-        root = Path(workspace_root or Path.cwd()).expanduser().resolve()
-        candidate = Path(path).expanduser()
-
-        if not candidate.is_absolute():
-            candidate = root / candidate
-
-        resolved = candidate.resolve()
-        try:
-            resolved.relative_to(root)
-        except ValueError as error:
-            raise PermissionError(
-                f"Path is outside the JARVIS workspace: {resolved}"
-            ) from error
-
-        return resolved
+        """Resolve a path through the reusable workspace security boundary."""
+        workspace = WorkspaceContext(workspace_root or Path.cwd())
+        return workspace.resolve(path)
 
     @staticmethod
     def read_text_file(
