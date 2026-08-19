@@ -6,6 +6,7 @@ class JarvisState(str, Enum):
 
     OFFLINE = "OFFLINE"
     READY = "READY"
+    ARMED = "ARMED"
     LISTENING = "LISTENING"
     TRANSCRIBING = "TRANSCRIBING"
     THINKING = "THINKING"
