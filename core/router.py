@@ -1,51 +1,55 @@
-from datetime import datetime
-from tools.system_tools import SystemTools
-from tools.file_tools import FileTools
-from memory.memory_manager import MemoryManager
+from __future__ import annotations
+
 from core.brain import Brain
+from core.events import EventBus
+from memory.memory_manager import MemoryManager
+from tools.file_tools import FileTools
+from tools.system_tools import SystemTools
+
 
 class CommandRouter:
-    
-    def __init__(self):
-        self.memory = MemoryManager()
-        self.brain = Brain()
-        
-    def route(self, user_input):
+    """Handles deterministic local commands, then falls back to the AI brain."""
+
+    def __init__(
+        self,
+        memory: MemoryManager | None = None,
+        brain: Brain | None = None,
+        events: EventBus | None = None,
+    ) -> None:
+        self.memory = memory or MemoryManager()
+        self.brain = brain or Brain(events=events)
+
+    def route(self, user_input: str):
         command = user_input.lower().strip()
 
-        if command in ["hello", "hi", "hey"]:
+        if command in {"hello", "hi", "hey"}:
             return self.greeting()
 
-        if command in ["help", "commands"]:
+        if command in {"help", "commands"}:
             return self.help()
 
-        if command in ["time", "what time is it", "current time"]:
+        if command in {"time", "what time is it", "current time"}:
             return self.current_time()
 
-        if command in ["who are you", "what are you", "your name"]:
+        if command in {"who are you", "what are you", "your name"}:
             return self.identity()
-        
-        if command in ["system", "system info", "system information"]:
+
+        if command in {"system", "system info", "system information"}:
             return self.system_info()
-        
-        if command in ["list files", "files", "show files"]:
+
+        if command in {"list files", "files", "show files"}:
             return self.list_files()
-        
+
         if command == "memories":
             return self.memory.get_all()
-        
+
         if command.startswith("remember "):
             content = user_input[9:].strip()
+            if "=" not in content:
+                return "Use: remember key = value"
 
-            if "=" in content:
-                key, value = content.split("=", 1)
-
-                return self.memory.remember(
-                    key.strip(),
-                    value.strip()
-                )
-
-            return "Use: remember key = value"
+            key, value = content.split("=", 1)
+            return self.memory.remember(key.strip(), value.strip())
 
         if command.startswith("recall "):
             key = user_input[7:].strip()
@@ -55,24 +59,35 @@ class CommandRouter:
             key = user_input[7:].strip()
             return self.memory.forget(key)
 
+        if command in {"clear conversation", "clear chat", "reset conversation"}:
+            self.brain.clear_conversation()
+            return "Conversation context cleared."
+
         return self.brain.respond(user_input)
 
-    def greeting(self):
+    @staticmethod
+    def greeting() -> str:
         return "Hello. I am JARVIS. How can I help you?"
 
-    def help(self):
+    @staticmethod
+    def help() -> str:
         return (
             "Currently available commands:\n"
             "  • hello\n"
             "  • time\n"
-            "  • who are you\n"
-            "  • help\n"
+            "  • system info\n"
+            "  • list files\n"
+            "  • remember key = value\n"
+            "  • recall key\n"
+            "  • forget key\n"
+            "  • memories\n"
+            "  • clear conversation\n"
             "  • exit"
         )
-    
-    def system_info(self):
-        info = SystemTools.get_system_info()
 
+    @staticmethod
+    def system_info() -> str:
+        info = SystemTools.get_system_info()
         return (
             f"System: {info['system']}\n"
             f"Release: {info['release']}\n"
@@ -80,12 +95,14 @@ class CommandRouter:
             f"Processor: {info['processor']}"
         )
 
-    def current_time(self):
+    @staticmethod
+    def current_time() -> str:
         return f"The current time is {SystemTools.get_time()}."
 
-    def identity(self):
+    @staticmethod
+    def identity() -> str:
         return "I am JARVIS, your personal AI system."
 
-    def list_files(self):
+    @staticmethod
+    def list_files():
         return FileTools.list_files()
-    
