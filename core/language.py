@@ -62,9 +62,9 @@ _APP_ALIASES = {
 def normalize_for_routing(text: str) -> str:
     """Return a conservative canonical form for deterministic commands.
 
-    Only high-confidence full-command shapes are rewritten. Arbitrary Hinglish
-    conversation is deliberately left alone so the AI receives the user's
-    original wording instead of an over-eager translation.
+    Only high-confidence English/Hindi/Hinglish command shapes are rewritten.
+    Arbitrary conversation is deliberately left alone so the AI receives the
+    user's original wording instead of an over-eager translation.
     """
 
     command = _clean(text)
@@ -114,6 +114,34 @@ def normalize_for_routing(text: str) -> str:
         command,
     ):
         return "mute"
+
+    if re.fullmatch(
+        r"(?:play\s*pause|play pause media|toggle media|toggle playback|"
+        r"music play pause|gana play pause|gaana play pause|गाना प्ले पॉज़)",
+        command,
+    ):
+        return "media play pause"
+
+    if re.fullmatch(
+        r"(?:next track|next song|skip track|agla gana|agla gaana|"
+        r"agla song|अगला गाना|अगला सॉन्ग)(?:\s+(?:karo|kar do|करो|कर दो))?",
+        command,
+    ):
+        return "next track"
+
+    if re.fullmatch(
+        r"(?:previous track|previous song|pichla gana|pichla gaana|"
+        r"pichla song|पिछला गाना|पिछला सॉन्ग)(?:\s+(?:karo|kar do|करो|कर दो))?",
+        command,
+    ):
+        return "previous track"
+
+    if re.fullmatch(
+        r"(?:stop media|stop music|music band karo|gana band karo|gaana band karo|"
+        r"म्यूजिक बंद करो|गाना बंद करो)",
+        command,
+    ):
+        return "stop media"
 
     youtube_match = re.fullmatch(
         r"(?:youtube|यूट्यूब)\s+(?:pe|par|पे|पर)\s+(.+?)\s+"
