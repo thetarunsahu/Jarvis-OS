@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.brain import Brain
 from core.events import EventBus
 from memory.memory_manager import MemoryManager
+from security.permissions import Approver
 from tools.file_tools import FileTools
 from tools.system_tools import SystemTools
 
@@ -64,6 +65,9 @@ class CommandRouter:
             return "Conversation context cleared."
 
         return self.brain.respond(user_input)
+
+    def set_permission_approver(self, approver: Approver | None) -> None:
+        self.brain.set_permission_approver(approver)
 
     @staticmethod
     def greeting() -> str:
