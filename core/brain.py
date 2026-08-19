@@ -41,31 +41,25 @@ class Brain:
         self,
         tool_name: str,
         arguments: dict[str, Any] | None = None,
+        *,
+        source: str = "deterministic_router",
     ) -> dict[str, Any]:
-        """Execute a known tool outside the model loop while preserving events.
+        """Execute a known tool outside the model loop.
 
-        This is used for high-confidence deterministic commands such as
-        "set volume to 30%". It avoids depending on the language model to decide
-        whether a clearly matching local capability exists, while permissions
-        are still enforced by ToolRegistry.
+        Permission events are emitted by ToolRegistry before the tool handler is
+        allowed to run. Brain intentionally does not emit ``tool_started`` before
+        calling the registry because doing so made the UI appear to execute an
+        action before asking for permission.
         """
 
         payload = arguments or {}
-        self._handle_event(
-            "tool_started",
-            {
-                "tool_name": tool_name,
-                "arguments": payload,
-                "source": "deterministic_router",
-            },
-        )
         result = self.tools.execute(tool_name, payload)
         self._handle_event(
             "tool_finished",
             {
                 "tool_name": tool_name,
                 "result": result,
-                "source": "deterministic_router",
+                "source": source,
             },
         )
         return result
