@@ -6,6 +6,7 @@ from core.events import EventBus
 from providers.ollama_provider import OllamaProvider
 from security.permissions import Approver
 from tools.tool_registry import ToolRegistry
+from tools.media_extension import register_media_tools
 
 
 class Brain:
@@ -25,6 +26,8 @@ class Brain:
         else:
             self.tools = tools
             self.tools.set_event_handler(self._handle_event)
+
+        register_media_tools(self.tools)
 
     def respond(self, user_input: str) -> str:
         return self.provider.generate(
