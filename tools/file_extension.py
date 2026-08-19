@@ -11,8 +11,9 @@ def register_file_tools(registry: ToolRegistry) -> None:
     spec = ToolSpec(
         name="read_text_file",
         description=(
-            "Read a UTF-8 text file from disk with a strict size limit. "
-            "Use this to inspect source code, configuration, logs, and notes."
+            "Read a UTF-8 text file from the active JARVIS workspace with a strict "
+            "size limit. Use this to inspect project source code, configuration, "
+            "logs, and notes without reading arbitrary files elsewhere on the computer."
         ),
         handler=FileTools.read_text_file,
         parameters={
@@ -20,7 +21,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the text file to read.",
+                    "description": "Workspace-relative path of the text file to read.",
                 },
                 "max_bytes": {
                     "type": "integer",
