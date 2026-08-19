@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import wave
+from array import array
 from typing import Any, Callable
 
 import pyttsx3
@@ -13,6 +16,7 @@ import speech_recognition as sr
 Recorder = Callable[..., Any]
 WaitForRecording = Callable[[], None]
 EngineFactory = Callable[[], Any]
+StreamFactory = Callable[..., Any]
 
 
 class VoiceError(RuntimeError):
@@ -27,9 +31,9 @@ class VoiceManager:
     """Blocking voice primitives used by background workers.
 
     This class intentionally contains no Qt code. The desktop interface is
-    responsible for calling ``listen`` and ``speak`` off the GUI thread.
-    pyttsx3 is initialised lazily inside ``speak`` so its Windows COM objects
-    are created on the same worker thread that uses them.
+    responsible for calling ``listen`` / ``listen_until_silence`` and ``speak``
+    off the GUI thread. pyttsx3 is initialised lazily inside ``speak`` so its
+    Windows COM objects are created on the same worker thread that uses them.
     """
 
     def __init__(
@@ -38,6 +42,7 @@ class VoiceManager:
         recorder: Recorder | None = None,
         wait_for_recording: WaitForRecording | None = None,
         engine_factory: EngineFactory | None = None,
+        stream_factory: StreamFactory | None = None,
         rate: int = 175,
         volume: float = 1.0,
     ) -> None:
@@ -45,15 +50,15 @@ class VoiceManager:
         self._recorder = recorder or sd.rec
         self._wait_for_recording = wait_for_recording or sd.wait
         self._engine_factory = engine_factory or pyttsx3.init
+        self._stream_factory = stream_factory or sd.RawInputStream
         self.rate = int(rate)
         self.volume = max(0.0, min(1.0, float(volume)))
 
     def listen(self, duration: float = 5.0, sample_rate: int = 16000) -> str:
-        """Capture microphone audio and return recognised text.
+        """Capture microphone audio for a fixed duration and return recognised text.
 
-        The current recogniser is Google's SpeechRecognition backend, so STT
-        requires internet access. Returning an empty string means speech was
-        captured but could not be understood.
+        This method remains available for compatibility and tests. The desktop
+        runtime uses ``listen_until_silence`` for lower-latency voice commands.
         """
         duration = float(duration)
         sample_rate = int(sample_rate)
@@ -74,16 +79,103 @@ class VoiceManager:
         except Exception as error:
             raise VoiceError(f"Microphone capture failed: {error}") from error
 
+        try:
+            audio_bytes = recording.tobytes()
+        except Exception as error:
+            raise VoiceError(f"Audio buffer conversion failed: {error}") from error
+
+        return self._recognize_pcm(audio_bytes, sample_rate)
+
+    def listen_until_silence(
+        self,
+        sample_rate: int = 16000,
+        start_timeout: float = 3.0,
+        max_duration: float = 10.0,
+        silence_duration: float = 0.65,
+        energy_threshold: int = 300,
+    ) -> str:
+        """Listen until the user stops speaking instead of waiting a fixed time.
+
+        Recording starts immediately. If speech is detected, capture stops after
+        roughly ``silence_duration`` seconds of silence. If no speech is detected,
+        the call returns after ``start_timeout`` seconds. ``max_duration`` is a
+        safety cap for unusually long/noisy input.
+        """
+        sample_rate = int(sample_rate)
+        start_timeout = float(start_timeout)
+        max_duration = float(max_duration)
+        silence_duration = float(silence_duration)
+        energy_threshold = int(energy_threshold)
+
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be greater than zero")
+        if start_timeout <= 0:
+            raise ValueError("start_timeout must be greater than zero")
+        if max_duration <= 0:
+            raise ValueError("max_duration must be greater than zero")
+        if silence_duration <= 0:
+            raise ValueError("silence_duration must be greater than zero")
+        if energy_threshold < 0:
+            raise ValueError("energy_threshold must not be negative")
+
+        chunks: list[bytes] = []
+        done = threading.Event()
+        started_at = time.monotonic()
+        speech_started = False
+        last_voice_at: float | None = None
+
+        def callback(indata, frames, time_info, status) -> None:
+            del frames, time_info
+            nonlocal speech_started, last_voice_at
+
+            now = time.monotonic()
+            chunk = bytes(indata)
+            rms = self._pcm_rms(chunk)
+
+            if rms >= energy_threshold:
+                speech_started = True
+                last_voice_at = now
+
+            if speech_started:
+                chunks.append(chunk)
+                if last_voice_at is not None and now - last_voice_at >= silence_duration:
+                    done.set()
+            elif now - started_at >= start_timeout:
+                done.set()
+
+            if now - started_at >= max_duration:
+                done.set()
+
+            if status:
+                # PortAudio status flags are informational here; a hard stream
+                # error will still surface from the context manager below.
+                pass
+
+        blocksize = max(256, int(sample_rate * 0.05))
+
+        try:
+            with self._stream_factory(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=blocksize,
+                callback=callback,
+            ):
+                done.wait(timeout=max_duration + 1.0)
+        except Exception as error:
+            raise VoiceError(f"Microphone capture failed: {error}") from error
+
+        if not chunks:
+            return ""
+
+        return self._recognize_pcm(b"".join(chunks), sample_rate)
+
+    def _recognize_pcm(self, audio_bytes: bytes, sample_rate: int) -> str:
         temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         temp_path = temp_file.name
         temp_file.close()
 
         try:
-            try:
-                audio_bytes = recording.tobytes()
-            except Exception as error:
-                raise VoiceError(f"Audio buffer conversion failed: {error}") from error
-
             with wave.open(temp_path, "wb") as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
@@ -103,12 +195,24 @@ class VoiceManager:
                 ) from error
 
             return str(text).strip()
-
         finally:
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+    @staticmethod
+    def _pcm_rms(audio_bytes: bytes) -> int:
+        if not audio_bytes:
+            return 0
+
+        samples = array("h")
+        samples.frombytes(audio_bytes)
+        if not samples:
+            return 0
+
+        total = sum(sample * sample for sample in samples)
+        return int((total / len(samples)) ** 0.5)
 
     def speak(self, text: str) -> None:
         """Speak text using the local Windows TTS engine."""
