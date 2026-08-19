@@ -139,6 +139,23 @@ class CommandRouter:
         }:
             return self._execute_tool("toggle_mute", {})
 
+        if command in {
+            "media play pause",
+            "play pause media",
+            "toggle media",
+            "toggle playback",
+        }:
+            return self._execute_tool("media_play_pause", {})
+
+        if command in {"next track", "next song", "skip track"}:
+            return self._execute_tool("media_next", {})
+
+        if command in {"previous track", "previous song", "last track"}:
+            return self._execute_tool("media_previous", {})
+
+        if command in {"stop media", "stop music"}:
+            return self._execute_tool("media_stop", {})
+
         settings_sections = {
             "sound": ("sound settings", "audio settings"),
             "display": ("display settings",),
@@ -314,6 +331,7 @@ class CommandRouter:
             "  • open example.com / Google pe local AI search karo\n"
             "  • YouTube pe Interstellar soundtrack search karo\n"
             "  • volume up / awaaz kam karo / volume tees percent kar do\n"
+            "  • next song / pichla gana / stop music / play-pause media\n"
             "  • open sound settings / lock the PC\n"
             "  • shutdown or restart (explicit confirmation required)\n"
             "  • cancel pending shutdown or restart\n"
