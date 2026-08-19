@@ -5,6 +5,7 @@ from typing import Any
 
 from core.brain import Brain
 from core.events import EventBus
+from core.language import normalize_for_routing
 from memory.memory_manager import MemoryManager
 from security.permissions import Approver
 from tools.file_tools import FileTools
@@ -25,8 +26,9 @@ class CommandRouter:
 
     def route(self, user_input: str):
         command = user_input.lower().strip()
+        canonical = normalize_for_routing(user_input)
 
-        if command in {"hello", "hi", "hey"}:
+        if command in {"hello", "hi", "hey", "namaste", "नमस्ते"}:
             return self.greeting()
 
         if command in {"help", "commands"}:
@@ -67,7 +69,7 @@ class CommandRouter:
             self.brain.clear_conversation()
             return "Conversation context cleared."
 
-        deterministic = self._route_deterministic_action(user_input)
+        deterministic = self._route_deterministic_action(canonical)
         if deterministic is not None:
             return deterministic
 
@@ -77,12 +79,7 @@ class CommandRouter:
         self.brain.set_permission_approver(approver)
 
     def _route_deterministic_action(self, user_input: str) -> str | None:
-        """Execute high-confidence local actions without asking the LLM to choose.
-
-        Common desktop commands use a fast lane so obvious actions do not pay the
-        language-model latency. Flexible or ambiguous requests still fall back to
-        the model and its normal tool loop.
-        """
+        """Execute high-confidence local actions without asking the LLM to choose."""
 
         command = " ".join(user_input.lower().strip().split())
 
@@ -313,10 +310,10 @@ class CommandRouter:
         return (
             "JARVIS supports natural-language commands. Examples:\n"
             "  • system info / what apps are running\n"
-            "  • open Notepad / open Chrome / open a local project\n"
-            "  • open example.com / search Google for local AI\n"
-            "  • search YouTube for Interstellar soundtrack\n"
-            "  • volume up / volume down / set volume to 40 percent / mute\n"
+            "  • open Notepad / Chrome kholo / open a local project\n"
+            "  • open example.com / Google pe local AI search karo\n"
+            "  • YouTube pe Interstellar soundtrack search karo\n"
+            "  • volume up / awaaz kam karo / volume tees percent kar do\n"
             "  • open sound settings / lock the PC\n"
             "  • shutdown or restart (explicit confirmation required)\n"
             "  • cancel pending shutdown or restart\n"
