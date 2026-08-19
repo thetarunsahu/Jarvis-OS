@@ -8,7 +8,9 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QFrame, QVBoxLayout
 
 from core.jarvis import Jarvis
+from core.state import JarvisState
 from interface.dashboard import CYAN, CYAN_DARK, MUTED, PANEL, WHITE, JarvisHUD
+from voice.voice_manager import VoiceManager
 
 
 @dataclass
@@ -58,6 +60,41 @@ class RequestWorker(QObject):
             self.failed.emit(f"{type(error).__name__}: {error}")
 
 
+class ListenWorker(QObject):
+    recognized = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, voice: VoiceManager, duration: float = 5.0) -> None:
+        super().__init__()
+        self.voice = voice
+        self.duration = duration
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.recognized.emit(self.voice.listen(duration=self.duration))
+        except Exception as error:
+            self.failed.emit(f"{type(error).__name__}: {error}")
+
+
+class SpeechWorker(QObject):
+    completed = Signal()
+    failed = Signal(str)
+
+    def __init__(self, voice: VoiceManager, text: str) -> None:
+        super().__init__()
+        self.voice = voice
+        self.text = text
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.voice.speak(self.text)
+            self.completed.emit()
+        except Exception as error:
+            self.failed.emit(f"{type(error).__name__}: {error}")
+
+
 class JarvisRuntimeHUD(JarvisHUD):
     """Existing HUD wired to the real JARVIS core through background workers."""
 
@@ -65,8 +102,15 @@ class JarvisRuntimeHUD(JarvisHUD):
         super().__init__()
 
         self.jarvis = Jarvis()
+        self.voice = VoiceManager()
+
         self.request_thread: QThread | None = None
         self.request_worker: RequestWorker | None = None
+        self.listen_thread: QThread | None = None
+        self.listen_worker: ListenWorker | None = None
+        self.speech_thread: QThread | None = None
+        self.speech_worker: SpeechWorker | None = None
+        self._speak_after_request = False
 
         self.permission_bridge = PermissionBridge(self)
         self.permission_bridge.permission_requested.connect(
@@ -110,9 +154,6 @@ class JarvisRuntimeHUD(JarvisHUD):
 
         self.response_label = QLabel("JARVIS is connected to the local runtime.")
         self.response_label.setWordWrap(True)
-        self.response_label.setTextInteractionFlags(
-            self.response_label.textInteractionFlags()
-        )
         self.response_label.setStyleSheet(
             f"color: {WHITE}; font-size: 12px;"
         )
@@ -138,32 +179,102 @@ class JarvisRuntimeHUD(JarvisHUD):
 
         if self.execute_button is None:
             raise RuntimeError("HUD execute button was not found.")
+        if self.listen_button is None:
+            raise RuntimeError("HUD listen button was not found.")
 
         try:
             self.execute_button.clicked.disconnect()
         except (RuntimeError, TypeError):
             pass
-
         self.execute_button.clicked.connect(self.execute_command)
         self.input.returnPressed.connect(self.execute_command)
 
-        if self.listen_button is not None:
-            try:
-                self.listen_button.clicked.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            self.listen_button.clicked.connect(self._voice_not_connected)
+        try:
+            self.listen_button.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self.listen_button.clicked.connect(self.start_listening)
+
+    def _operation_active(self) -> bool:
+        return any(
+            thread is not None
+            for thread in (
+                self.request_thread,
+                self.listen_thread,
+                self.speech_thread,
+            )
+        )
 
     @Slot()
     def execute_command(self) -> None:
         command = self.input.text().strip()
-        if not command or self.request_thread is not None:
+        if not command or self._operation_active():
             return
 
         self.input.clear()
         self.response_label.setText(f"YOU: {command}")
         self.activity_label.setText("REQUEST ACCEPTED")
         self._set_busy(True)
+        self._start_request(command, speak_response=False)
+
+    @Slot()
+    def start_listening(self) -> None:
+        if self._operation_active():
+            return
+
+        self._set_busy(True)
+        self.response_label.setText("VOICE: listening for 5 seconds...")
+        self.jarvis.set_runtime_state(JarvisState.LISTENING)
+
+        thread = QThread(self)
+        worker = ListenWorker(self.voice, duration=5.0)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.recognized.connect(self._on_voice_recognized)
+        worker.failed.connect(self._on_voice_failed)
+        worker.recognized.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.recognized.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._release_listen_worker)
+
+        self.listen_thread = thread
+        self.listen_worker = worker
+        thread.start()
+
+    @Slot(str)
+    def _on_voice_recognized(self, transcript: str) -> None:
+        transcript = transcript.strip()
+        if not transcript:
+            self.response_label.setText(
+                "VOICE: I couldn't understand that. Press LISTEN and try again."
+            )
+            self.jarvis.set_runtime_state(JarvisState.READY)
+            self._set_busy(False)
+            return
+
+        self.response_label.setText(f"YOU (VOICE): {transcript}")
+        self.input.setText(transcript)
+        self._start_request(transcript, speak_response=True)
+
+    @Slot(str)
+    def _on_voice_failed(self, message: str) -> None:
+        self.response_label.setText(f"VOICE ERROR: {message}")
+        self.jarvis.set_runtime_state(JarvisState.ERROR)
+        self._set_busy(False)
+
+    @Slot()
+    def _release_listen_worker(self) -> None:
+        self.listen_thread = None
+        self.listen_worker = None
+
+    def _start_request(self, command: str, *, speak_response: bool) -> None:
+        if self.request_thread is not None:
+            return
+
+        self._speak_after_request = speak_response
 
         thread = QThread(self)
         worker = RequestWorker(self.jarvis, command)
@@ -177,7 +288,7 @@ class JarvisRuntimeHUD(JarvisHUD):
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._release_worker)
+        thread.finished.connect(self._release_request_worker)
 
         self.request_thread = thread
         self.request_worker = worker
@@ -187,18 +298,63 @@ class JarvisRuntimeHUD(JarvisHUD):
     def _on_request_finished(self, response: str) -> None:
         if response:
             self.response_label.setText(f"JARVIS: {response}")
-        self._set_busy(False)
+
+        if self._speak_after_request and response:
+            self._start_speaking(response)
+        else:
+            self._set_busy(False)
 
     @Slot(str)
     def _on_request_failed(self, message: str) -> None:
         self.response_label.setText(f"JARVIS ERROR: {message}")
-        self._set_status("ERROR")
+        self.jarvis.set_runtime_state(JarvisState.ERROR)
         self._set_busy(False)
 
     @Slot()
-    def _release_worker(self) -> None:
+    def _release_request_worker(self) -> None:
         self.request_thread = None
         self.request_worker = None
+        self._speak_after_request = False
+
+    def _start_speaking(self, text: str) -> None:
+        if self.speech_thread is not None:
+            return
+
+        self.jarvis.set_runtime_state(JarvisState.SPEAKING)
+
+        thread = QThread(self)
+        worker = SpeechWorker(self.voice, text)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_speech_completed)
+        worker.failed.connect(self._on_speech_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.completed.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._release_speech_worker)
+
+        self.speech_thread = thread
+        self.speech_worker = worker
+        thread.start()
+
+    @Slot()
+    def _on_speech_completed(self) -> None:
+        self.jarvis.set_runtime_state(JarvisState.READY)
+        self._set_busy(False)
+
+    @Slot(str)
+    def _on_speech_failed(self, message: str) -> None:
+        self.activity_label.setText(f"VOICE ERROR // {message}")
+        self.jarvis.set_runtime_state(JarvisState.ERROR)
+        self._set_busy(False)
+
+    @Slot()
+    def _release_speech_worker(self) -> None:
+        self.speech_thread = None
+        self.speech_worker = None
 
     @Slot(object)
     def _show_permission_dialog(self, prompt: PermissionPrompt) -> None:
@@ -262,6 +418,7 @@ class JarvisRuntimeHUD(JarvisHUD):
 
         if hasattr(self, "activity_label") and state in {
             "READY",
+            "LISTENING",
             "THINKING",
             "AWAITING_PERMISSION",
             "EXECUTING",
@@ -274,15 +431,11 @@ class JarvisRuntimeHUD(JarvisHUD):
     def _set_busy(self, busy: bool) -> None:
         if self.execute_button is not None:
             self.execute_button.setEnabled(not busy)
+        if self.listen_button is not None:
+            self.listen_button.setEnabled(not busy)
         self.input.setEnabled(not busy)
         if not busy:
             self.input.setFocus()
-
-    @Slot()
-    def _voice_not_connected(self) -> None:
-        self.response_label.setText(
-            "VOICE: text runtime is live; microphone worker is the next integration step."
-        )
 
     def closeEvent(self, event) -> None:
         self.jarvis.unsubscribe("*", self.event_bridge.forward)
