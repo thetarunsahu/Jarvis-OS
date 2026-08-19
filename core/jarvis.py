@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.events import EventBus
 from core.orchestrator import JarvisOrchestrator
 from core.state import JarvisState
+from core.task_runtime import TaskPlan, TaskReport
 from security.permissions import Approver, PermissionDecision, PermissionRequest
 
 
@@ -11,7 +12,7 @@ class Jarvis:
 
     def __init__(self) -> None:
         self.name = "JARVIS"
-        self.version = "0.2.0-dev"
+        self.version = "0.3.0-dev"
         self.events = EventBus()
         self.orchestrator = JarvisOrchestrator(events=self.events)
 
@@ -21,6 +22,10 @@ class Jarvis:
 
     def process(self, user_input: str) -> str:
         return self.orchestrator.process(user_input)
+
+    def run_plan(self, plan: TaskPlan) -> TaskReport:
+        """Execute a validated multi-step plan through permissions and tools."""
+        return self.orchestrator.run_plan(plan)
 
     def set_runtime_state(self, state: JarvisState) -> None:
         """Expose modality states such as LISTENING and SPEAKING to clients."""
