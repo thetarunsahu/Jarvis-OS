@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.events import EventBus, JarvisEvent
 from core.router import CommandRouter
 from core.state import JarvisState
+from security.permissions import Approver
 
 
 class JarvisOrchestrator:
@@ -24,6 +25,9 @@ class JarvisOrchestrator:
 
         self.events.subscribe("tool_started", self._on_tool_started)
         self.events.subscribe("tool_finished", self._on_tool_finished)
+        self.events.subscribe("permission_required", self._on_permission_required)
+        self.events.subscribe("permission_granted", self._on_permission_granted)
+        self.events.subscribe("permission_denied", self._on_permission_denied)
         self.events.subscribe("agent_limit_reached", self._on_agent_limit_reached)
 
     def set_state(self, state: JarvisState) -> None:
@@ -37,6 +41,10 @@ class JarvisOrchestrator:
             previous=previous.value,
             current=state.value,
         )
+
+    def set_permission_approver(self, approver: Approver | None) -> None:
+        """Attach the UI/CLI callback that approves higher-risk tools."""
+        self.router.set_permission_approver(approver)
 
     def process(self, user_input: str) -> str:
         text = user_input.strip()
@@ -73,6 +81,15 @@ class JarvisOrchestrator:
         self.set_state(JarvisState.EXECUTING)
 
     def _on_tool_finished(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.VERIFYING)
+
+    def _on_permission_required(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.AWAITING_PERMISSION)
+
+    def _on_permission_granted(self, event: JarvisEvent) -> None:
+        self.set_state(JarvisState.EXECUTING)
+
+    def _on_permission_denied(self, event: JarvisEvent) -> None:
         self.set_state(JarvisState.VERIFYING)
 
     def _on_agent_limit_reached(self, event: JarvisEvent) -> None:
