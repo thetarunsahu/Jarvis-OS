@@ -79,13 +79,24 @@ class CommandRouter:
     def _route_deterministic_action(self, user_input: str) -> str | None:
         """Execute high-confidence local actions without asking the LLM to choose.
 
-        The model still handles flexible natural language, but commands with a
-        clear, unambiguous mapping are routed directly. This makes common desktop
-        controls reliable and prevents the model from incorrectly claiming that a
-        capability is unavailable when the tool is already registered.
+        Common desktop commands use a fast lane so obvious actions do not pay the
+        language-model latency. Flexible or ambiguous requests still fall back to
+        the model and its normal tool loop.
         """
 
         command = " ".join(user_input.lower().strip().split())
+
+        if command in {
+            "what apps are running",
+            "what applications are running",
+            "which apps are running",
+            "which applications are running",
+            "show running apps",
+            "list running apps",
+            "show running applications",
+            "list running applications",
+        }:
+            return self._execute_tool("list_running_apps", {})
 
         volume_match = re.search(
             r"\b(?:set|change|turn)\s+(?:the\s+)?(?:system\s+)?volume"
@@ -206,7 +217,37 @@ class CommandRouter:
             if self._looks_like_web_target(target):
                 return self._execute_tool("open_url", {"url": target})
 
+        app_match = re.match(r"^(?:open|launch|start)\s+(.+?)(?:\s+app)?$", command)
+        if app_match:
+            app_name = self._normalise_known_app(app_match.group(1).strip())
+            if app_name is not None:
+                return self._execute_tool("open_app", {"app_name": app_name})
+
         return None
+
+    @staticmethod
+    def _normalise_known_app(target: str) -> str | None:
+        aliases = {
+            "notepad": "notepad",
+            "calculator": "calculator",
+            "calc": "calculator",
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "edge": "edge",
+            "microsoft edge": "edge",
+            "vscode": "vscode",
+            "vs code": "vscode",
+            "visual studio code": "vscode",
+            "explorer": "explorer",
+            "file explorer": "explorer",
+            "powershell": "powershell",
+            "windows powershell": "powershell",
+            "terminal": "terminal",
+            "windows terminal": "terminal",
+            "cmd": "cmd",
+            "command prompt": "cmd",
+        }
+        return aliases.get(target)
 
     @staticmethod
     def _extract_power_delay(command: str, action: str) -> int | None:
@@ -272,7 +313,7 @@ class CommandRouter:
         return (
             "JARVIS supports natural-language commands. Examples:\n"
             "  • system info / what apps are running\n"
-            "  • open Notepad / open a local project\n"
+            "  • open Notepad / open Chrome / open a local project\n"
             "  • open example.com / search Google for local AI\n"
             "  • search YouTube for Interstellar soundtrack\n"
             "  • volume up / volume down / set volume to 40 percent / mute\n"
