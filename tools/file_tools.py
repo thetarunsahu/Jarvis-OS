@@ -7,29 +7,48 @@ class FileTools:
     """Read-only file inspection primitives used by JARVIS tools."""
 
     MAX_TEXT_BYTES = 256 * 1024
+    MAX_LIST_ENTRIES = 200
 
     @staticmethod
-    def list_files(directory: str = ".") -> str:
-        path = Path(directory)
+    def list_files(
+        directory: str = ".",
+        max_entries: int = MAX_LIST_ENTRIES,
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> dict[str, object]:
+        """List a directory inside the active workspace using bounded structured output."""
+        path = FileTools._resolve_workspace_file(directory, workspace_root)
 
+        if max_entries < 1 or max_entries > FileTools.MAX_LIST_ENTRIES:
+            raise ValueError(
+                f"max_entries must be between 1 and {FileTools.MAX_LIST_ENTRIES}."
+            )
         if not path.exists():
-            return "Directory does not exist."
+            raise FileNotFoundError(f"Directory does not exist: {path}")
+        if not path.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {path}")
 
-        items = []
+        visible_items = sorted(
+            (item for item in path.iterdir() if not item.name.startswith(".")),
+            key=lambda item: item.name.casefold(),
+        )
+        selected_items = visible_items[:max_entries]
+        entries = [
+            {
+                "name": item.name,
+                "path": str(item.relative_to(path)),
+                "type": "directory" if item.is_dir() else "file",
+            }
+            for item in selected_items
+        ]
 
-        for item in path.iterdir():
-            if item.name.startswith("."):
-                continue
-
-            if item.is_dir():
-                items.append(f"[DIR]  {item.name}")
-            else:
-                items.append(f"[FILE] {item.name}")
-
-        if not items:
-            return "Directory is empty."
-
-        return "\n".join(sorted(items))
+        return {
+            "path": str(path),
+            "entries": entries,
+            "count": len(entries),
+            "total_visible": len(visible_items),
+            "truncated": len(visible_items) > max_entries,
+        }
 
     @staticmethod
     def _resolve_workspace_file(
