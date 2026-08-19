@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.events import EventBus
+from core.workspace import WorkspaceContext
 from providers.ollama_provider import OllamaProvider
 from security.permissions import Approver
 from tools.file_extension import register_file_tools
@@ -18,9 +19,11 @@ class Brain:
         provider: OllamaProvider | None = None,
         tools: ToolRegistry | None = None,
         events: EventBus | None = None,
+        workspace: WorkspaceContext | None = None,
     ) -> None:
         self.events = events
         self.provider = provider or OllamaProvider()
+        self.workspace = workspace or WorkspaceContext.from_cwd()
 
         if tools is None:
             self.tools = ToolRegistry(event_handler=self._handle_event)
@@ -28,7 +31,7 @@ class Brain:
             self.tools = tools
             self.tools.set_event_handler(self._handle_event)
 
-        register_file_tools(self.tools)
+        register_file_tools(self.tools, self.workspace)
         register_media_tools(self.tools)
 
     def respond(self, user_input: str) -> str:
