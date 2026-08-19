@@ -210,10 +210,10 @@ class WakeWordDetector:
         if matched_scores:
             return max(matched_scores)
 
-        # A single-model custom/test detector has no ambiguity. With multiple
-        # unknown model scores, refusing to guess is safer than waking on an
-        # unrelated model.
-        if len(numeric_scores) == 1:
+        # Test/custom factories may intentionally expose a single synthetic
+        # score key. Production models must match the configured wake model;
+        # otherwise an unrelated model output must never wake JARVIS.
+        if self._model_factory is not None and len(numeric_scores) == 1:
             return numeric_scores[0]
         return 0.0
 
