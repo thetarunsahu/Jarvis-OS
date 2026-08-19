@@ -32,6 +32,7 @@ SpeechRecognition
 sounddevice
 pyttsx3
 numpy
+faster-whisper>=1.2.1,<2
 
 # Development / tests
 pytest
