@@ -31,14 +31,20 @@ class SpeechToTextProvider(Protocol):
 class FasterWhisperProvider:
     """Local multilingual STT backed by faster-whisper.
 
-    The model is loaded lazily on first use and then kept resident for the
-    lifetime of the provider. Defaults intentionally target CPU INT8 so JARVIS'
-    local LLM can keep the laptop GPU for Ollama. Override with environment
-    variables if a different profile is desired:
+    JARVIS intentionally accepts only English and Hindi by default. Hinglish is
+    naturally covered because Whisper generally classifies mixed Hindi/English
+    speech as one of those two languages. Low-confidence language detections and
+    low-confidence speech segments are rejected instead of being passed to the
+    assistant as commands.
 
-    JARVIS_STT_MODEL=small
-    JARVIS_STT_DEVICE=cpu
-    JARVIS_STT_COMPUTE=int8
+    Environment overrides:
+      JARVIS_STT_MODEL=small
+      JARVIS_STT_DEVICE=cpu
+      JARVIS_STT_COMPUTE=int8
+      JARVIS_STT_LANGUAGES=en,hi
+      JARVIS_STT_MIN_LANGUAGE_PROB=0.35
+      JARVIS_STT_MIN_AVG_LOGPROB=-1.15
+      JARVIS_STT_MAX_NO_SPEECH_PROB=0.60
     """
 
     def __init__(
@@ -47,6 +53,10 @@ class FasterWhisperProvider:
         device: str | None = None,
         compute_type: str | None = None,
         model_factory: Callable[..., Any] | None = None,
+        allowed_languages: set[str] | None = None,
+        min_language_probability: float | None = None,
+        min_avg_logprob: float | None = None,
+        max_no_speech_probability: float | None = None,
     ) -> None:
         self.model_name = model_name or os.getenv("JARVIS_STT_MODEL", "small")
         self.device = device or os.getenv("JARVIS_STT_DEVICE", "cpu")
@@ -54,9 +64,39 @@ class FasterWhisperProvider:
             "JARVIS_STT_COMPUTE",
             "int8",
         )
+        configured_languages = os.getenv("JARVIS_STT_LANGUAGES", "en,hi")
+        self.allowed_languages = allowed_languages or {
+            item.strip().lower()
+            for item in configured_languages.split(",")
+            if item.strip()
+        }
+        self.min_language_probability = float(
+            min_language_probability
+            if min_language_probability is not None
+            else os.getenv("JARVIS_STT_MIN_LANGUAGE_PROB", "0.35")
+        )
+        self.min_avg_logprob = float(
+            min_avg_logprob
+            if min_avg_logprob is not None
+            else os.getenv("JARVIS_STT_MIN_AVG_LOGPROB", "-1.15")
+        )
+        self.max_no_speech_probability = float(
+            max_no_speech_probability
+            if max_no_speech_probability is not None
+            else os.getenv("JARVIS_STT_MAX_NO_SPEECH_PROB", "0.60")
+        )
         self._model_factory = model_factory
         self._model: Any | None = None
         self.last_language: str | None = None
+        self.last_language_probability: float | None = None
+        self.last_rejection: str | None = None
+
+        if not self.allowed_languages:
+            raise ValueError("allowed_languages cannot be empty")
+        if not 0.0 <= self.min_language_probability <= 1.0:
+            raise ValueError("min_language_probability must be between 0 and 1")
+        if not 0.0 <= self.max_no_speech_probability <= 1.0:
+            raise ValueError("max_no_speech_probability must be between 0 and 1")
 
     def _get_model(self, stage_callback: StageCallback | None = None) -> Any:
         if self._model is not None:
@@ -96,6 +136,7 @@ class FasterWhisperProvider:
         if not audio_bytes:
             return ""
 
+        self.last_rejection = None
         model = self._get_model(stage_callback)
         temp_path = _write_temp_wav(audio_bytes, sample_rate)
 
@@ -105,7 +146,10 @@ class FasterWhisperProvider:
                     temp_path,
                     beam_size=1,
                     vad_filter=True,
-                    vad_parameters={"min_silence_duration_ms": 350},
+                    vad_parameters={
+                        "min_silence_duration_ms": 350,
+                        "speech_pad_ms": 120,
+                    },
                     condition_on_previous_text=False,
                 )
                 items = list(segments)
@@ -113,17 +157,81 @@ class FasterWhisperProvider:
                 raise STTError(f"Local transcription failed: {error}") from error
 
             language = getattr(info, "language", None)
-            self.last_language = str(language) if language else None
-            return " ".join(
-                str(getattr(segment, "text", "")).strip()
-                for segment in items
-                if str(getattr(segment, "text", "")).strip()
-            ).strip()
+            language_probability = getattr(info, "language_probability", None)
+            self.last_language = str(language).lower() if language else None
+            try:
+                self.last_language_probability = (
+                    float(language_probability)
+                    if language_probability is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                self.last_language_probability = None
+
+            if (
+                self.last_language is not None
+                and self.last_language not in self.allowed_languages
+            ):
+                self.last_rejection = f"unsupported_language:{self.last_language}"
+                return ""
+
+            if (
+                self.last_language_probability is not None
+                and self.last_language_probability < self.min_language_probability
+            ):
+                self.last_rejection = "low_language_confidence"
+                return ""
+
+            accepted: list[str] = []
+            for segment in items:
+                text = str(getattr(segment, "text", "")).strip()
+                if not text:
+                    continue
+
+                if not self._segment_is_reliable(segment):
+                    continue
+
+                accepted.append(text)
+
+            transcript = " ".join(accepted).strip()
+            if not transcript:
+                self.last_rejection = "low_speech_confidence"
+                return ""
+
+            if not any(character.isalnum() for character in transcript):
+                self.last_rejection = "non_speech_text"
+                return ""
+
+            return transcript
         finally:
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+    def _segment_is_reliable(self, segment: Any) -> bool:
+        avg_logprob = getattr(segment, "avg_logprob", None)
+        no_speech_prob = getattr(segment, "no_speech_prob", None)
+
+        try:
+            if (
+                avg_logprob is not None
+                and float(avg_logprob) < self.min_avg_logprob
+            ):
+                return False
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            if (
+                no_speech_prob is not None
+                and float(no_speech_prob) > self.max_no_speech_probability
+            ):
+                return False
+        except (TypeError, ValueError):
+            pass
+
+        return True
 
 
 class GoogleSpeechProvider:
