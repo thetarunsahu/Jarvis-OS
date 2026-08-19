@@ -2,11 +2,13 @@ from datetime import datetime
 from tools.system_tools import SystemTools
 from tools.file_tools import FileTools
 from memory.memory_manager import MemoryManager
+from core.brain import Brain
 
 class CommandRouter:
     
     def __init__(self):
         self.memory = MemoryManager()
+        self.brain = Brain()
         
     def route(self, user_input):
         command = user_input.lower().strip()
@@ -53,7 +55,7 @@ class CommandRouter:
             key = user_input[7:].strip()
             return self.memory.forget(key)
 
-        return None
+        return self.brain.respond(user_input)
 
     def greeting(self):
         return "Hello. I am JARVIS. How can I help you?"

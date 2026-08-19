@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python environments
+.venv/
+.venv-1/
+.venv-2/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+
+# Local model data
+Qwen3 8B/
