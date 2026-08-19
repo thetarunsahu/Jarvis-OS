@@ -27,14 +27,14 @@ class WakeDetection:
 class WakeWordDetector:
     """Low-latency local wake-word detection using openWakeWord.
 
-    Audio remains local. The detector uses 16 kHz mono PCM frames and ONNX on
-    Windows. The model is downloaded lazily the first time it is needed and is
-    then kept resident for the lifetime of this detector instance.
+    Audio remains local. To avoid random speech triggering JARVIS, detection now
+    requires repeated high-confidence evidence rather than a single score spike.
 
     Environment overrides:
       JARVIS_WAKE_WORD=hey_jarvis
-      JARVIS_WAKE_THRESHOLD=0.62
-      JARVIS_WAKE_VAD_THRESHOLD=0.45
+      JARVIS_WAKE_THRESHOLD=0.82
+      JARVIS_WAKE_VAD_THRESHOLD=0.55
+      JARVIS_WAKE_REQUIRED_HITS=2
     """
 
     def __init__(
@@ -42,6 +42,7 @@ class WakeWordDetector:
         model_name: str | None = None,
         threshold: float | None = None,
         vad_threshold: float | None = None,
+        required_hits: int | None = None,
         sample_rate: int = 16000,
         chunk_samples: int = 1280,
         model_factory: ModelFactory | None = None,
@@ -53,12 +54,17 @@ class WakeWordDetector:
         self.threshold = float(
             threshold
             if threshold is not None
-            else os.getenv("JARVIS_WAKE_THRESHOLD", "0.62")
+            else os.getenv("JARVIS_WAKE_THRESHOLD", "0.82")
         )
         self.vad_threshold = float(
             vad_threshold
             if vad_threshold is not None
-            else os.getenv("JARVIS_WAKE_VAD_THRESHOLD", "0.45")
+            else os.getenv("JARVIS_WAKE_VAD_THRESHOLD", "0.55")
+        )
+        self.required_hits = int(
+            required_hits
+            if required_hits is not None
+            else os.getenv("JARVIS_WAKE_REQUIRED_HITS", "2")
         )
         self.sample_rate = int(sample_rate)
         self.chunk_samples = int(chunk_samples)
@@ -72,6 +78,8 @@ class WakeWordDetector:
             raise ValueError("threshold must be between 0 and 1")
         if not 0.0 <= self.vad_threshold <= 1.0:
             raise ValueError("vad_threshold must be between 0 and 1")
+        if self.required_hits < 1 or self.required_hits > 5:
+            raise ValueError("required_hits must be between 1 and 5")
         if self.sample_rate != 16000:
             raise ValueError("openWakeWord requires a 16000 Hz sample rate")
         if self.chunk_samples <= 0 or self.chunk_samples % 1280 != 0:
@@ -90,6 +98,7 @@ class WakeWordDetector:
             return None
 
         self._emit_stage(stage_callback, "wake_armed")
+        strong_hits = 0
 
         try:
             with self._stream_factory(
@@ -116,6 +125,11 @@ class WakeWordDetector:
 
                     score = self._extract_score(scores)
                     if score >= self.threshold:
+                        strong_hits += 1
+                    else:
+                        strong_hits = max(0, strong_hits - 1)
+
+                    if strong_hits >= self.required_hits:
                         try:
                             reset = getattr(model, "reset", None)
                             if callable(reset):
@@ -176,27 +190,29 @@ class WakeWordDetector:
             return 0.0
 
         target = self.model_name.lower().replace("-", "_").replace(" ", "_")
-        best = 0.0
+        matched_scores: list[float] = []
+        numeric_scores: list[float] = []
+
         for name, value in scores.items():
             try:
                 score = float(value)
             except (TypeError, ValueError):
                 continue
 
+            numeric_scores.append(score)
             key = str(name).lower().replace("-", "_").replace(" ", "_")
             if target in key or key in target or "jarvis" in key:
-                best = max(best, score)
+                matched_scores.append(score)
 
-        if best > 0.0:
-            return best
+        if matched_scores:
+            return max(matched_scores)
 
-        numeric_scores: list[float] = []
-        for value in scores.values():
-            try:
-                numeric_scores.append(float(value))
-            except (TypeError, ValueError):
-                pass
-        return max(numeric_scores, default=0.0)
+        # A single-model custom/test detector has no ambiguity. With multiple
+        # unknown model scores, refusing to guess is safer than waking on the
+        # highest unrelated score.
+        if len(numeric_scores) == 1:
+            return numeric_scores[0]
+        return 0.0
 
     @staticmethod
     def _emit_stage(callback: StageCallback | None, stage: str) -> None:
