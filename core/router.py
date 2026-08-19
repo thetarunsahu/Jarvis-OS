@@ -76,17 +76,18 @@ class CommandRouter:
     @staticmethod
     def help() -> str:
         return (
-            "Currently available commands:\n"
-            "  • hello\n"
-            "  • time\n"
-            "  • system info\n"
-            "  • list files\n"
-            "  • remember key = value\n"
-            "  • recall key\n"
-            "  • forget key\n"
-            "  • memories\n"
+            "JARVIS supports natural-language commands. Examples:\n"
+            "  • system info / what apps are running\n"
+            "  • open Notepad / open a local project\n"
+            "  • open example.com / search Google for local AI\n"
+            "  • search YouTube for Interstellar soundtrack\n"
+            "  • volume up / volume down / set volume to 40 percent / mute\n"
+            "  • open sound settings / lock the PC\n"
+            "  • shutdown or restart (explicit confirmation required)\n"
+            "  • cancel pending shutdown or restart\n"
+            "  • remember key = value / recall key / forget key / memories\n"
             "  • clear conversation\n"
-            "  • exit"
+            "Side-effecting actions require permission before execution."
         )
 
     @staticmethod
