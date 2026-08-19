@@ -1,105 +1,200 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Callable
+
 import ollama
 
 
+EventHandler = Callable[[str, dict[str, Any]], None]
+ToolExecutor = Callable[[str, dict[str, Any]], Any]
+
+
 class OllamaProvider:
+    """Local Ollama-backed language model provider with bounded tool execution.
 
-    def __init__(self):
-        self.model = "qwen3:8b"
+    The provider owns model conversation history and the model/tool loop, but it
+    does not own permissions, UI state, or tool implementations. Those remain in
+    higher layers so the provider stays reusable.
+    """
 
-        self.system_prompt = """
-You are JARVIS, a local personal AI assistant.
+    def __init__(
+        self,
+        model: str = "qwen3:8b",
+        chat_fn: Callable[..., Any] | None = None,
+        max_tool_rounds: int = 4,
+        history_turns: int = 6,
+    ) -> None:
+        self.model = model
+        self._chat = chat_fn or ollama.chat
+        self.max_tool_rounds = max(1, max_tool_rounds)
+        self.history_turns = max(0, history_turns)
+        self.history: list[dict[str, str]] = []
+
+        self.system_prompt = """You are JARVIS, a local personal AI assistant.
 
 You have access to tools.
 
 Important rules:
-- Use a tool when the user's request requires real system information.
+- Use a tool when the user's request requires real system information or an action.
 - Never claim that you performed an action unless a tool actually executed it.
-- After a tool returns a result, use that result to answer the user.
+- Use tool results as the source of truth for system facts and completed actions.
+- If a tool result is an error, explain it instead of pretending the action worked.
 - For normal conversation, answer directly.
 - Keep responses concise unless the user asks for detail.
 """
 
     def generate(
         self,
-        user_input,
-        tools=None,
-        executor=None
-    ):
+        user_input: str,
+        tools: list[dict[str, Any]] | None = None,
+        executor: ToolExecutor | None = None,
+        event_handler: EventHandler | None = None,
+    ) -> str:
+        text = user_input.strip()
+        if not text:
+            return ""
 
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt
-            },
-            {
-                "role": "user",
-                "content": "/no_think\n" + user_input
-            }
+        tool_definitions = tools or []
+        messages: list[Any] = [
+            {"role": "system", "content": self.system_prompt},
+            *self._history_context(),
+            {"role": "user", "content": "/no_think\n" + text},
         ]
 
-        response = ollama.chat(
-            model=self.model,
-            messages=messages,
-            tools=tools or []
-        )
-
-        # -----------------------------------------
-        # NO TOOL CALL
-        # -----------------------------------------
-
-        if not response.message.tool_calls:
-            return response.message.content
-
-        # -----------------------------------------
-        # TOOL CALL
-        # -----------------------------------------
-
-        messages.append(response.message)
-
-        for tool_call in response.message.tool_calls:
-
-            tool_name = tool_call.function.name
-            arguments = tool_call.function.arguments or {}
-
-            print(
-                f"JARVIS TOOL: {tool_name}"
+        for round_number in range(1, self.max_tool_rounds + 1):
+            response = self._chat(
+                model=self.model,
+                messages=messages,
+                tools=tool_definitions,
             )
 
-            print(
-                f"ARGUMENTS: {arguments}"
-            )
+            message = self._value(response, "message")
+            if message is None:
+                raise RuntimeError("Ollama returned a response without a message.")
 
-            if executor:
+            tool_calls = self._value(message, "tool_calls", []) or []
+            content = self._value(message, "content", "") or ""
 
-                result = executor(
-                    tool_name,
-                    arguments
+            if not tool_calls:
+                final_text = str(content).strip()
+                if not final_text:
+                    final_text = "I completed the request but received no final text."
+                self._remember_turn(text, final_text)
+                return final_text
+
+            messages.append(message)
+
+            for tool_call in tool_calls:
+                function = self._value(tool_call, "function")
+                tool_name = str(self._value(function, "name", "")).strip()
+                arguments = self._normalise_arguments(
+                    self._value(function, "arguments", {})
                 )
 
-            else:
+                if not tool_name:
+                    raise RuntimeError("The model requested a tool without a name.")
 
-                result = (
-                    "Tool executor is unavailable."
+                self._emit(
+                    event_handler,
+                    "tool_started",
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    round=round_number,
                 )
 
-            print(
-                f"TOOL RESULT: {result}"
-            )
+                if executor is None:
+                    result: Any = "Tool executor is unavailable."
+                else:
+                    result = executor(tool_name, arguments)
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "content": str(result),
-                }
-            )
+                self._emit(
+                    event_handler,
+                    "tool_finished",
+                    tool_name=tool_name,
+                    result=result,
+                    round=round_number,
+                )
 
-        # -----------------------------------------
-        # ASK QWEN FOR FINAL RESPONSE
-        # -----------------------------------------
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": self._serialise_tool_result(result),
+                    }
+                )
 
-        final_response = ollama.chat(
-            model=self.model,
-            messages=messages
+        self._emit(
+            event_handler,
+            "agent_limit_reached",
+            max_tool_rounds=self.max_tool_rounds,
+        )
+        raise RuntimeError(
+            f"Model exceeded the tool round limit ({self.max_tool_rounds})."
         )
 
-        return final_response.message.content
+    def clear_history(self) -> None:
+        self.history.clear()
+
+    def _history_context(self) -> list[dict[str, str]]:
+        if self.history_turns == 0:
+            return []
+        max_messages = self.history_turns * 2
+        return list(self.history[-max_messages:])
+
+    def _remember_turn(self, user_text: str, assistant_text: str) -> None:
+        if self.history_turns == 0:
+            return
+
+        self.history.extend(
+            [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": assistant_text},
+            ]
+        )
+
+        max_messages = self.history_turns * 2
+        if len(self.history) > max_messages:
+            self.history = self.history[-max_messages:]
+
+    @staticmethod
+    def _emit(
+        event_handler: EventHandler | None,
+        event_name: str,
+        **payload: Any,
+    ) -> None:
+        if event_handler is not None:
+            event_handler(event_name, payload)
+
+    @staticmethod
+    def _value(obj: Any, name: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    @staticmethod
+    def _normalise_arguments(arguments: Any) -> dict[str, Any]:
+        if arguments is None:
+            return {}
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        try:
+            return dict(arguments)
+        except (TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _serialise_tool_result(result: Any) -> str:
+        if isinstance(result, str):
+            return result
+        try:
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(result)
