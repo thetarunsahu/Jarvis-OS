@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.events import EventBus
 from core.orchestrator import JarvisOrchestrator
+from security.permissions import Approver, PermissionDecision, PermissionRequest
 
 
 class Jarvis:
@@ -20,12 +21,14 @@ class Jarvis:
     def process(self, user_input: str) -> str:
         return self.orchestrator.process(user_input)
 
-    def start(self) -> None:
-        """Run the legacy terminal interface.
+    def set_permission_approver(self, approver: Approver | None) -> None:
+        """Attach a client-specific approval callback for side-effecting tools."""
+        self.orchestrator.set_permission_approver(approver)
 
-        The CLI is intentionally thin: all request handling goes through the
-        same orchestrator that the desktop HUD and voice interface will use.
-        """
+    def start(self) -> None:
+        """Run the terminal interface using the shared orchestrator."""
+        self.set_permission_approver(self._cli_permission_approver)
+
         print("=" * 50)
         print("                 J A R V I S")
         print("=" * 50)
@@ -46,3 +49,19 @@ class Jarvis:
 
             response = self.process(user_input)
             print(f"JARVIS: {response}\n")
+
+    @staticmethod
+    def _cli_permission_approver(
+        request: PermissionRequest,
+    ) -> PermissionDecision:
+        print("\nJARVIS PERMISSION REQUEST")
+        print(f"Tool   : {request.tool_name}")
+        print(f"Risk   : {request.level.value}")
+        print(f"Reason : {request.reason}")
+        if request.arguments:
+            print(f"Args   : {request.arguments}")
+
+        answer = input("Allow this action? [y/N]: ").strip().lower()
+        if answer in {"y", "yes"}:
+            return PermissionDecision.ALLOW
+        return PermissionDecision.DENY
