@@ -32,13 +32,42 @@ class FileTools:
         return "\n".join(sorted(items))
 
     @staticmethod
-    def read_text_file(path: str, max_bytes: int = MAX_TEXT_BYTES) -> dict[str, object]:
-        """Read a UTF-8 text file with a hard size bound.
+    def _resolve_workspace_file(
+        path: str,
+        workspace_root: str | Path | None = None,
+    ) -> Path:
+        """Resolve a file path and reject traversal outside the active workspace."""
+        root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        candidate = Path(path).expanduser()
 
-        The bound keeps model/tool observations predictable and prevents a single
-        accidental read from pulling a very large file into the agent context.
+        if not candidate.is_absolute():
+            candidate = root / candidate
+
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise PermissionError(
+                f"Path is outside the JARVIS workspace: {resolved}"
+            ) from error
+
+        return resolved
+
+    @staticmethod
+    def read_text_file(
+        path: str,
+        max_bytes: int = MAX_TEXT_BYTES,
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> dict[str, object]:
+        """Read a UTF-8 text file inside the active workspace with a hard size bound.
+
+        The workspace boundary prevents a model-supplied path from inspecting
+        arbitrary files elsewhere on the computer. The size bound keeps model/tool
+        observations predictable and prevents a single accidental read from pulling
+        a very large file into the agent context.
         """
-        file_path = Path(path).expanduser()
+        file_path = FileTools._resolve_workspace_file(path, workspace_root)
 
         if max_bytes < 1 or max_bytes > FileTools.MAX_TEXT_BYTES:
             raise ValueError(
@@ -61,7 +90,7 @@ class FileTools:
             raise ValueError("File is not valid UTF-8 text.") from error
 
         return {
-            "path": str(file_path.resolve()),
+            "path": str(file_path),
             "size_bytes": size_bytes,
             "content": content,
             "truncated": False,
