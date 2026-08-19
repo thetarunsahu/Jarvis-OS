@@ -10,6 +10,7 @@ from security.permissions import (
     PermissionManager,
     PermissionRequest,
 )
+from tools.app_tools import AppTools
 from tools.file_tools import FileTools
 from tools.system_tools import SystemTools
 
@@ -83,6 +84,97 @@ class ToolRegistry:
                 name="current_time",
                 description="Get the current local time.",
                 handler=SystemTools.get_time,
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="list_running_apps",
+                description=(
+                    "Inspect currently running desktop processes/applications. "
+                    "Use this when the user asks what apps are open or running."
+                ),
+                handler=AppTools.list_running_apps,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Maximum number of unique processes to return.",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="open_app",
+                description=(
+                    "Open an installed desktop application such as VS Code, "
+                    "Chrome, Edge, Notepad, Calculator, Explorer, PowerShell, "
+                    "Windows Terminal, or CMD."
+                ),
+                handler=AppTools.open_app,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "app_name": {
+                            "type": "string",
+                            "description": "Application name to open.",
+                        }
+                    },
+                    "required": ["app_name"],
+                    "additionalProperties": False,
+                },
+                permission=PermissionLevel.CONFIRM,
+                permission_reason="Opening a desktop application changes the user's session.",
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="open_path",
+                description=(
+                    "Open an existing local file or folder using the operating "
+                    "system's default application."
+                ),
+                handler=AppTools.open_path,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Existing local file or folder path to open.",
+                        }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                permission=PermissionLevel.CONFIRM,
+                permission_reason="Opening a local file or folder is a desktop action.",
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="open_project",
+                description=(
+                    "Open an existing project directory in Visual Studio Code."
+                ),
+                handler=AppTools.open_project,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Existing project directory path.",
+                        }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                permission=PermissionLevel.CONFIRM,
+                permission_reason="Opening a project launches VS Code and changes the desktop session.",
             )
         )
 
