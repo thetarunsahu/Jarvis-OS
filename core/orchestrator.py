@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.events import EventBus, JarvisEvent
 from core.router import CommandRouter
 from core.state import JarvisState
+from core.task_runtime import TaskPlan, TaskReport, TaskRuntime
 from security.permissions import Approver
 
 
@@ -21,6 +22,7 @@ class JarvisOrchestrator:
     ) -> None:
         self.events = events or EventBus()
         self.router = router or CommandRouter(events=self.events)
+        self.task_runtime = TaskRuntime(self.router.brain, events=self.events)
         self.state = JarvisState.READY
 
         self.events.subscribe("tool_started", self._on_tool_started)
@@ -76,6 +78,37 @@ class JarvisOrchestrator:
                 message=str(error),
             )
             return "I hit an internal error while processing that request."
+
+    def run_plan(self, plan: TaskPlan) -> TaskReport:
+        """Execute an already-validated task plan through the shared runtime."""
+
+        self.events.emit(
+            "request_started",
+            text=plan.goal,
+            source="task_plan",
+        )
+        self.set_state(JarvisState.THINKING)
+
+        try:
+            report = self.task_runtime.run(plan)
+            self.events.emit(
+                "task_report_ready",
+                goal=report.goal,
+                status=report.status.value,
+                summary=report.summary(),
+                all_verified=report.all_verified,
+            )
+            self.set_state(JarvisState.READY)
+            return report
+        except Exception as error:
+            self.set_state(JarvisState.ERROR)
+            self.events.emit(
+                "error",
+                error_type=type(error).__name__,
+                message=str(error),
+                source="task_plan",
+            )
+            raise
 
     def _on_tool_started(self, event: JarvisEvent) -> None:
         self.set_state(JarvisState.EXECUTING)
