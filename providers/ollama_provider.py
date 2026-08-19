@@ -62,7 +62,9 @@ Important rules:
             {"role": "user", "content": "/no_think\n" + text},
         ]
 
-        for round_number in range(1, self.max_tool_rounds + 1):
+        tool_rounds = 0
+
+        while True:
             response = self._chat(
                 model=self.model,
                 messages=messages,
@@ -83,6 +85,17 @@ Important rules:
                 self._remember_turn(text, final_text)
                 return final_text
 
+            if tool_rounds >= self.max_tool_rounds:
+                self._emit(
+                    event_handler,
+                    "agent_limit_reached",
+                    max_tool_rounds=self.max_tool_rounds,
+                )
+                raise RuntimeError(
+                    f"Model exceeded the tool round limit ({self.max_tool_rounds})."
+                )
+
+            tool_rounds += 1
             messages.append(message)
 
             for tool_call in tool_calls:
@@ -100,7 +113,7 @@ Important rules:
                     "tool_started",
                     tool_name=tool_name,
                     arguments=arguments,
-                    round=round_number,
+                    round=tool_rounds,
                 )
 
                 if executor is None:
@@ -113,24 +126,16 @@ Important rules:
                     "tool_finished",
                     tool_name=tool_name,
                     result=result,
-                    round=round_number,
+                    round=tool_rounds,
                 )
 
                 messages.append(
                     {
                         "role": "tool",
                         "content": self._serialise_tool_result(result),
+                        "tool_name": tool_name,
                     }
                 )
-
-        self._emit(
-            event_handler,
-            "agent_limit_reached",
-            max_tool_rounds=self.max_tool_rounds,
-        )
-        raise RuntimeError(
-            f"Model exceeded the tool round limit ({self.max_tool_rounds})."
-        )
 
     def clear_history(self) -> None:
         self.history.clear()
