@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from core.language import normalize_for_routing
 from core.router import CommandRouter
-from security.permissions import PermissionLevel
 from tools.media_extension import register_media_tools
 from tools.tool_registry import ToolRegistry
 
@@ -69,11 +68,6 @@ def test_media_capability_pack_registers_confirm_tools():
         "media_stop",
     }.issubset(names)
 
-    definitions = {
-        item["function"]["name"]: item
-        for item in registry.get_tool_definitions()
-    }
-    assert "media_next" in definitions
-
-    spec = registry._tools["media_next"]
-    assert spec.permission == PermissionLevel.CONFIRM
+    result = registry.execute("media_next", {})
+    assert result["ok"] is False
+    assert result["status"] == "permission_denied"
