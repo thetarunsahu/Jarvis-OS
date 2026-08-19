@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from core.brain import Brain
 from core.events import EventBus
 from memory.memory_manager import MemoryManager
@@ -64,10 +67,201 @@ class CommandRouter:
             self.brain.clear_conversation()
             return "Conversation context cleared."
 
+        deterministic = self._route_deterministic_action(user_input)
+        if deterministic is not None:
+            return deterministic
+
         return self.brain.respond(user_input)
 
     def set_permission_approver(self, approver: Approver | None) -> None:
         self.brain.set_permission_approver(approver)
+
+    def _route_deterministic_action(self, user_input: str) -> str | None:
+        """Execute high-confidence local actions without asking the LLM to choose.
+
+        The model still handles flexible natural language, but commands with a
+        clear, unambiguous mapping are routed directly. This makes common desktop
+        controls reliable and prevents the model from incorrectly claiming that a
+        capability is unavailable when the tool is already registered.
+        """
+
+        command = " ".join(user_input.lower().strip().split())
+
+        volume_match = re.search(
+            r"\b(?:set|change|turn)\s+(?:the\s+)?(?:system\s+)?volume"
+            r"(?:\s+(?:to|at))?\s+(\d{1,3})\s*(?:%|percent)?\b",
+            command,
+        )
+        if volume_match:
+            percent = int(volume_match.group(1))
+            if not 0 <= percent <= 100:
+                return "Volume must be between 0 and 100 percent."
+            return self._execute_tool("set_volume", {"percent": percent})
+
+        if any(
+            phrase in command
+            for phrase in (
+                "volume up",
+                "increase volume",
+                "raise volume",
+                "turn the volume up",
+                "turn volume up",
+            )
+        ):
+            return self._execute_tool("volume_up", {})
+
+        if any(
+            phrase in command
+            for phrase in (
+                "volume down",
+                "decrease volume",
+                "lower volume",
+                "turn the volume down",
+                "turn volume down",
+            )
+        ):
+            return self._execute_tool("volume_down", {})
+
+        if command in {
+            "mute",
+            "mute system",
+            "mute the system",
+            "toggle mute",
+            "toggle system mute",
+        }:
+            return self._execute_tool("toggle_mute", {})
+
+        settings_sections = {
+            "sound": ("sound settings", "audio settings"),
+            "display": ("display settings",),
+            "bluetooth": ("bluetooth settings",),
+            "network": ("network settings", "wifi settings", "wi-fi settings"),
+            "apps": ("app settings", "apps settings"),
+            "privacy": ("privacy settings",),
+            "update": ("windows update", "update settings"),
+        }
+        for section, phrases in settings_sections.items():
+            if any(phrase in command for phrase in phrases) and (
+                command.startswith("open ")
+                or command.startswith("show ")
+                or "settings" in command
+            ):
+                return self._execute_tool("open_settings", {"section": section})
+
+        if command in {
+            "lock pc",
+            "lock the pc",
+            "lock computer",
+            "lock the computer",
+            "lock workstation",
+            "lock the workstation",
+        }:
+            return self._execute_tool("lock_pc", {})
+
+        if command in {
+            "cancel shutdown",
+            "cancel the shutdown",
+            "cancel restart",
+            "cancel the restart",
+            "cancel power action",
+        }:
+            return self._execute_tool("cancel_power_action", {})
+
+        shutdown_delay = self._extract_power_delay(command, "shutdown")
+        if shutdown_delay is not None:
+            return self._execute_tool(
+                "shutdown_computer",
+                {"delay_seconds": shutdown_delay},
+            )
+
+        restart_delay = self._extract_power_delay(command, "restart")
+        if restart_delay is not None:
+            return self._execute_tool(
+                "restart_computer",
+                {"delay_seconds": restart_delay},
+            )
+
+        youtube_match = re.match(
+            r"^(?:search\s+youtube\s+(?:for\s+)?|youtube\s+search\s+)(.+)$",
+            command,
+        )
+        if youtube_match:
+            query = youtube_match.group(1).strip()
+            if query:
+                return self._execute_tool("search_youtube", {"query": query})
+
+        web_match = re.match(
+            r"^(?:search\s+(?:google|the web|web)\s+(?:for\s+)?|"
+            r"google\s+search\s+)(.+)$",
+            command,
+        )
+        if web_match:
+            query = web_match.group(1).strip()
+            if query:
+                return self._execute_tool("search_web", {"query": query})
+
+        open_match = re.match(r"^(?:open|visit|go to)\s+(.+)$", command)
+        if open_match:
+            target = open_match.group(1).strip()
+            if self._looks_like_web_target(target):
+                return self._execute_tool("open_url", {"url": target})
+
+        return None
+
+    @staticmethod
+    def _extract_power_delay(command: str, action: str) -> int | None:
+        if not re.search(rf"\b{re.escape(action)}\b", command):
+            return None
+
+        starts_action = (
+            command == action
+            or command.startswith(f"{action} ")
+            or command.startswith(f"please {action}")
+        )
+        if not starts_action:
+            return None
+
+        match = re.search(
+            r"\bin\s+(\d+)\s*(second|seconds|minute|minutes)\b",
+            command,
+        )
+        if match:
+            amount = int(match.group(1))
+            unit = match.group(2)
+            seconds = amount * 60 if unit.startswith("minute") else amount
+            return max(0, min(seconds, 3600))
+
+        return 30
+
+    @staticmethod
+    def _looks_like_web_target(target: str) -> bool:
+        if target.startswith(("http://", "https://")):
+            return True
+        return bool(
+            re.match(
+                r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s]*)?$",
+                target,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        result = self.brain.execute_tool(tool_name, arguments)
+        if result.get("ok"):
+            data = result.get("data")
+            if isinstance(data, dict):
+                message = data.get("message")
+                if message:
+                    return str(message)
+            if data is None:
+                return f"{tool_name} completed."
+            return str(data)
+
+        if result.get("status") == "permission_denied":
+            return "Action cancelled because permission was not granted."
+
+        error = result.get("error") or "Unknown tool error."
+        return f"I couldn't complete that action: {error}"
 
     @staticmethod
     def greeting() -> str:
