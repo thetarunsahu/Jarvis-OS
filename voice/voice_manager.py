@@ -17,6 +17,7 @@ Recorder = Callable[..., Any]
 WaitForRecording = Callable[[], None]
 EngineFactory = Callable[[], Any]
 StreamFactory = Callable[..., Any]
+StageCallback = Callable[[str], None]
 
 
 class VoiceError(RuntimeError):
@@ -55,12 +56,17 @@ class VoiceManager:
         self.rate = int(rate)
         self.volume = max(0.0, min(1.0, float(volume)))
 
-    def listen(self, duration: float = 5.0, sample_rate: int = 16000) -> str:
+    def listen(
+        self,
+        duration: float = 8.0,
+        sample_rate: int = 16000,
+        stage_callback: StageCallback | None = None,
+    ) -> str:
         """Capture microphone audio and return recognised text.
 
         With the real microphone this is adaptive: recording ends shortly after
         speech stops, while ``duration`` acts as a safety cap. Injected recorders
-        keep the fixed-duration path so existing tests and callers remain stable.
+        keep the fixed-duration path so tests and alternate callers remain stable.
         """
         duration = float(duration)
         sample_rate = int(sample_rate)
@@ -70,10 +76,13 @@ class VoiceManager:
         if sample_rate <= 0:
             raise ValueError("sample_rate must be greater than zero")
 
+        self._emit_stage(stage_callback, "listening")
+
         if self._adaptive_listen:
             return self.listen_until_silence(
                 sample_rate=sample_rate,
                 max_duration=duration,
+                stage_callback=stage_callback,
             )
 
         try:
@@ -92,22 +101,24 @@ class VoiceManager:
         except Exception as error:
             raise VoiceError(f"Audio buffer conversion failed: {error}") from error
 
+        self._emit_stage(stage_callback, "transcribing")
         return self._recognize_pcm(audio_bytes, sample_rate)
 
     def listen_until_silence(
         self,
         sample_rate: int = 16000,
-        start_timeout: float = 3.0,
-        max_duration: float = 10.0,
-        silence_duration: float = 0.65,
+        start_timeout: float = 2.5,
+        max_duration: float = 8.0,
+        silence_duration: float = 0.5,
         energy_threshold: int = 300,
+        stage_callback: StageCallback | None = None,
     ) -> str:
         """Listen until the user stops speaking instead of waiting a fixed time.
 
         Recording starts immediately. If speech is detected, capture stops after
         roughly ``silence_duration`` seconds of silence. If no speech is detected,
         the call returns after ``start_timeout`` seconds. ``max_duration`` is a
-        safety cap for unusually long/noisy input.
+        safety cap for unusually long or noisy input.
         """
         sample_rate = int(sample_rate)
         start_timeout = float(start_timeout)
@@ -133,7 +144,7 @@ class VoiceManager:
         last_voice_at: float | None = None
 
         def callback(indata, frames, time_info, status) -> None:
-            del frames, time_info
+            del frames, time_info, status
             nonlocal speech_started, last_voice_at
 
             now = time.monotonic()
@@ -146,16 +157,16 @@ class VoiceManager:
 
             if speech_started:
                 chunks.append(chunk)
-                if last_voice_at is not None and now - last_voice_at >= silence_duration:
+                if (
+                    last_voice_at is not None
+                    and now - last_voice_at >= silence_duration
+                ):
                     done.set()
             elif now - started_at >= start_timeout:
                 done.set()
 
             if now - started_at >= max_duration:
                 done.set()
-
-            if status:
-                pass
 
         blocksize = max(256, int(sample_rate * 0.05))
 
@@ -174,6 +185,7 @@ class VoiceManager:
         if not chunks:
             return ""
 
+        self._emit_stage(stage_callback, "transcribing")
         return self._recognize_pcm(b"".join(chunks), sample_rate)
 
     def _recognize_pcm(self, audio_bytes: bytes, sample_rate: int) -> str:
@@ -206,6 +218,18 @@ class VoiceManager:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+    @staticmethod
+    def _emit_stage(
+        callback: StageCallback | None,
+        stage: str,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(stage)
+        except Exception:
+            pass
 
     @staticmethod
     def _pcm_rms(audio_bytes: bytes) -> int:
