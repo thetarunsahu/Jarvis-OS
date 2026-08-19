@@ -25,6 +25,13 @@ class Jarvis:
         """Attach a client-specific approval callback for side-effecting tools."""
         self.orchestrator.set_permission_approver(approver)
 
+    def subscribe(self, event_name: str, callback) -> None:
+        """Subscribe UI/voice clients without exposing the EventBus directly."""
+        self.events.subscribe(event_name, callback)
+
+    def unsubscribe(self, event_name: str, callback) -> None:
+        self.events.unsubscribe(event_name, callback)
+
     def start(self) -> None:
         """Run the terminal interface using the shared orchestrator."""
         self.set_permission_approver(self._cli_permission_approver)
