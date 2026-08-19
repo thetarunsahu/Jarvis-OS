@@ -8,6 +8,8 @@ from typing import Any, Callable
 import numpy as np
 import sounddevice as sd
 
+from voice.audio_service import AudioInputService, get_audio_input_service
+
 
 StageCallback = Callable[[str], None]
 ModelFactory = Callable[[], Any]
@@ -27,9 +29,9 @@ class WakeDetection:
 class WakeWordDetector:
     """Low-latency local wake-word detection using openWakeWord.
 
-    Detection requires consecutive target-model hits. This is stricter than a
-    single-score trigger, but the default threshold is kept low enough that a
-    normal "Hey Jarvis" is still practical on laptop microphones.
+    Production uses the process-wide ``AudioInputService`` so wake detection no
+    longer owns a second microphone stream. Tests can still inject a legacy
+    stream factory to exercise the detector in isolation.
 
     Environment overrides:
       JARVIS_WAKE_WORD=hey_jarvis
@@ -48,6 +50,7 @@ class WakeWordDetector:
         chunk_samples: int = 1280,
         model_factory: ModelFactory | None = None,
         stream_factory: StreamFactory | None = None,
+        audio_service: AudioInputService | None = None,
     ) -> None:
         self.model_name = (
             model_name or os.getenv("JARVIS_WAKE_WORD", "hey_jarvis")
@@ -70,7 +73,12 @@ class WakeWordDetector:
         self.sample_rate = int(sample_rate)
         self.chunk_samples = int(chunk_samples)
         self._model_factory = model_factory
-        self._stream_factory = stream_factory or sd.RawInputStream
+        self._stream_factory = stream_factory
+        self._audio_service = (
+            audio_service
+            if audio_service is not None
+            else (None if stream_factory is not None else get_audio_input_service())
+        )
         self._model: Any | None = None
 
         if not self.model_name:
@@ -85,6 +93,11 @@ class WakeWordDetector:
             raise ValueError("openWakeWord requires a 16000 Hz sample rate")
         if self.chunk_samples <= 0 or self.chunk_samples % 1280 != 0:
             raise ValueError("chunk_samples must be a positive multiple of 1280")
+        if (
+            self._audio_service is not None
+            and self._audio_service.sample_rate != self.sample_rate
+        ):
+            raise ValueError("wake detector and audio service sample rates must match")
 
     def wait_for_wake_word(
         self,
@@ -99,10 +112,89 @@ class WakeWordDetector:
             return None
 
         self._emit_stage(stage_callback, "wake_armed")
+
+        if self._audio_service is not None:
+            return self._wait_from_audio_service(
+                model,
+                stop_event,
+                stage_callback=stage_callback,
+            )
+
+        return self._wait_from_legacy_stream(
+            model,
+            stop_event,
+            stage_callback=stage_callback,
+        )
+
+    def _wait_from_audio_service(
+        self,
+        model: Any,
+        stop_event: threading.Event,
+        *,
+        stage_callback: StageCallback | None,
+    ) -> WakeDetection | None:
+        service = self._audio_service
+        if service is None:
+            return None
+
+        try:
+            cursor = service.latest_sequence()
+        except Exception as error:
+            raise WakeWordError(f"Wake-word microphone failed: {error}") from error
+
+        pending = bytearray()
+        required_bytes = self.chunk_samples * 2
+        strong_hits = 0
+        chunk_end_sequence = cursor
+
+        while not stop_event.is_set():
+            try:
+                frame = service.read_after(cursor, timeout=0.25)
+            except Exception as error:
+                raise WakeWordError(f"Wake-word microphone failed: {error}") from error
+
+            if frame is None:
+                continue
+
+            cursor = frame.sequence
+            chunk_end_sequence = frame.sequence
+            pending.extend(frame.pcm)
+
+            while len(pending) >= required_bytes and not stop_event.is_set():
+                raw = bytes(pending[:required_bytes])
+                del pending[:required_bytes]
+
+                detection = self._score_chunk(
+                    model,
+                    raw,
+                    strong_hits=strong_hits,
+                )
+                strong_hits = detection[0]
+                score = detection[1]
+
+                if strong_hits >= self.required_hits:
+                    service.mark_wake_detected(chunk_end_sequence)
+                    self._reset_model(model)
+                    self._emit_stage(stage_callback, "wake_detected")
+                    return WakeDetection(
+                        model_name=self.model_name,
+                        score=score,
+                    )
+
+        return None
+
+    def _wait_from_legacy_stream(
+        self,
+        model: Any,
+        stop_event: threading.Event,
+        *,
+        stage_callback: StageCallback | None,
+    ) -> WakeDetection | None:
+        stream_factory = self._stream_factory or sd.RawInputStream
         strong_hits = 0
 
         try:
-            with self._stream_factory(
+            with stream_factory(
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
@@ -113,32 +205,15 @@ class WakeWordDetector:
                     if isinstance(raw, tuple):
                         raw = raw[0]
 
-                    frame = np.frombuffer(bytes(raw), dtype=np.int16)
-                    if frame.size == 0:
-                        continue
-
-                    try:
-                        scores = model.predict(frame)
-                    except Exception as error:
-                        raise WakeWordError(
-                            f"Wake-word inference failed: {error}"
-                        ) from error
-
-                    score = self._extract_score(scores)
-                    if score >= self.threshold:
-                        strong_hits += 1
-                    else:
-                        # Confirmation must be consecutive. A random isolated
-                        # spike cannot be carried forward into a later frame.
-                        strong_hits = 0
+                    strong_hits, score = self._score_chunk(
+                        model,
+                        bytes(raw),
+                        strong_hits=strong_hits,
+                    )
 
                     if strong_hits >= self.required_hits:
-                        try:
-                            reset = getattr(model, "reset", None)
-                            if callable(reset):
-                                reset()
-                        finally:
-                            self._emit_stage(stage_callback, "wake_detected")
+                        self._reset_model(model)
+                        self._emit_stage(stage_callback, "wake_detected")
                         return WakeDetection(
                             model_name=self.model_name,
                             score=score,
@@ -149,6 +224,35 @@ class WakeWordDetector:
             raise WakeWordError(f"Wake-word microphone failed: {error}") from error
 
         return None
+
+    def _score_chunk(
+        self,
+        model: Any,
+        raw: bytes,
+        *,
+        strong_hits: int,
+    ) -> tuple[int, float]:
+        frame = np.frombuffer(raw, dtype=np.int16)
+        if frame.size == 0:
+            return 0, 0.0
+
+        try:
+            scores = model.predict(frame)
+        except Exception as error:
+            raise WakeWordError(f"Wake-word inference failed: {error}") from error
+
+        score = self._extract_score(scores)
+        if score >= self.threshold:
+            strong_hits += 1
+        else:
+            strong_hits = 0
+        return strong_hits, score
+
+    @staticmethod
+    def _reset_model(model: Any) -> None:
+        reset = getattr(model, "reset", None)
+        if callable(reset):
+            reset()
 
     def _get_model(self, stage_callback: StageCallback | None = None) -> Any:
         if self._model is not None:
@@ -210,9 +314,6 @@ class WakeWordDetector:
         if matched_scores:
             return max(matched_scores)
 
-        # Test/custom factories may intentionally expose a single synthetic
-        # score key. Production models must match the configured wake model;
-        # otherwise an unrelated model output must never wake JARVIS.
         if self._model_factory is not None and len(numeric_scores) == 1:
             return numeric_scores[0]
         return 0.0
