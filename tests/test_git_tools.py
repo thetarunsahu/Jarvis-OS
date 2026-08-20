@@ -111,10 +111,71 @@ def test_git_status_uses_bounded_shell_free_command(
     assert captured["timeout"] == 7
 
 
-def test_git_status_tool_is_registered_safe(tmp_path: Path) -> None:
+def test_git_diff_returns_bounded_unstaged_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+    patch = "diff --git a/a.txt b/a.txt\n+" + ("x" * 100)
+
+    def fake_run(*args, **kwargs):
+        captured["command"] = args[0]
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=patch,
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GitTools.inspect_diff(tmp_path, max_bytes=48, timeout_seconds=6)
+
+    assert result["staged"] is False
+    assert result["truncated"] is True
+    assert result["returned_bytes"] <= 48
+    assert result["total_bytes"] == len(patch.encode("utf-8"))
+    assert "--cached" not in captured["command"]
+    assert "--no-ext-diff" in captured["command"]
+    assert captured["shell"] is False
+    assert captured["timeout"] == 6
+
+
+def test_git_diff_supports_staged_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured["command"] = args[0]
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="diff --git a/a.txt b/a.txt\n+hello\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GitTools.inspect_diff(tmp_path, staged=True)
+
+    assert result["staged"] is True
+    assert result["truncated"] is False
+    assert "--cached" in captured["command"]
+
+
+def test_git_diff_rejects_oversized_requested_limit(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_bytes"):
+        GitTools.inspect_diff(tmp_path, max_bytes=GitTools.MAX_DIFF_BYTES + 1)
+
+
+def test_git_status_and_diff_tools_are_registered_safe(tmp_path: Path) -> None:
     registry = ToolRegistry()
     register_git_tools(registry, WorkspaceContext(tmp_path))
 
     metadata = {item["name"]: item for item in registry.get_tool_metadata()}
 
     assert metadata["git_status"]["permission"] == "safe"
+    assert metadata["git_diff"]["permission"] == "safe"
