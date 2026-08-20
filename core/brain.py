@@ -7,8 +7,9 @@ from core.workspace import WorkspaceContext
 from providers.ollama_provider import OllamaProvider
 from security.permissions import Approver
 from tools.file_extension import register_file_tools
-from tools.tool_registry import ToolRegistry
+from tools.git_extension import register_git_tools
 from tools.media_extension import register_media_tools
+from tools.tool_registry import ToolRegistry
 
 
 class Brain:
@@ -32,6 +33,7 @@ class Brain:
             self.tools.set_event_handler(self._handle_event)
 
         register_file_tools(self.tools, self.workspace)
+        register_git_tools(self.tools, self.workspace)
         register_media_tools(self.tools)
 
     def respond(self, user_input: str) -> str:
