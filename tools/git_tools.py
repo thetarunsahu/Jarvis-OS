@@ -12,6 +12,8 @@ class GitTools:
 
     DEFAULT_TIMEOUT_SECONDS = 5
     MAX_STATUS_ENTRIES = 200
+    DEFAULT_DIFF_BYTES = 32 * 1024
+    MAX_DIFF_BYTES = 64 * 1024
 
     @staticmethod
     def _run_git(
@@ -41,6 +43,18 @@ class GitTools:
                 f"Git command exceeded {timeout_seconds} second timeout."
             ) from error
 
+    @staticmethod
+    def _raise_for_git_failure(result: subprocess.CompletedProcess[str], action: str) -> None:
+        if result.returncode == 0:
+            return
+
+        message = (result.stderr or result.stdout).strip()
+        if "not a git repository" in message.lower():
+            raise ValueError("Active JARVIS workspace is not a Git repository.")
+        raise RuntimeError(
+            message or f"git {action} failed with exit code {result.returncode}."
+        )
+
     @classmethod
     def inspect_status(
         cls,
@@ -60,15 +74,7 @@ class GitTools:
             ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
             timeout_seconds=timeout_seconds,
         )
-
-        if result.returncode != 0:
-            message = (result.stderr or result.stdout).strip()
-            lowered = message.lower()
-            if "not a git repository" in lowered:
-                raise ValueError("Active JARVIS workspace is not a Git repository.")
-            raise RuntimeError(
-                message or f"git status failed with exit code {result.returncode}."
-            )
+        cls._raise_for_git_failure(result, "status")
 
         lines = result.stdout.splitlines()
         branch_line = lines[0] if lines and lines[0].startswith("## ") else ""
@@ -147,4 +153,48 @@ class GitTools:
             "returned_count": len(entries),
             "total_count": total_entries,
             "truncated": total_entries > len(entries),
+        }
+
+    @classmethod
+    def inspect_diff(
+        cls,
+        workspace_root: str | Path = ".",
+        staged: bool = False,
+        max_bytes: int = DEFAULT_DIFF_BYTES,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """Return a bounded patch for staged or unstaged changes in the workspace."""
+        if max_bytes < 1 or max_bytes > cls.MAX_DIFF_BYTES:
+            raise ValueError(
+                f"max_bytes must be between 1 and {cls.MAX_DIFF_BYTES}"
+            )
+
+        workspace = WorkspaceContext(workspace_root)
+        args = ["diff"]
+        if staged:
+            args.append("--cached")
+        args.extend(["--no-ext-diff", "--no-color", "--unified=3", "--"])
+
+        result = cls._run_git(
+            workspace,
+            args,
+            timeout_seconds=timeout_seconds,
+        )
+        cls._raise_for_git_failure(result, "diff")
+
+        encoded = result.stdout.encode("utf-8")
+        truncated = len(encoded) > max_bytes
+        if truncated:
+            patch = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        else:
+            patch = result.stdout
+
+        returned_bytes = len(patch.encode("utf-8"))
+        return {
+            "repository_root": str(workspace.root),
+            "staged": staged,
+            "patch": patch,
+            "returned_bytes": returned_bytes,
+            "total_bytes": len(encoded),
+            "truncated": truncated,
         }
