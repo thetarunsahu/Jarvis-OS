@@ -147,6 +147,7 @@ class PresenceCore(QWidget):
 class JarvisHome(QWidget):
     command_submitted = Signal(str)
     diagnostics_requested = Signal()
+    workspace_resume_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -195,30 +196,41 @@ class JarvisHome(QWidget):
         content.setSpacing(16)
 
         left = Surface("RECENT WORK")
-        left.setMinimumWidth(250)
-        left.setMaximumWidth(320)
-        recent_hint = QLabel(
-            "Workspaces will appear here as JARVIS learns and restores project sessions."
-        )
-        recent_hint.setWordWrap(True)
-        recent_hint.setObjectName("muted")
-        left.layout.addWidget(recent_hint)
+        left.setMinimumWidth(270)
+        left.setMaximumWidth(340)
+
+        self.workspace_status = QLabel("NO SAVED CONTEXT")
+        self.workspace_status.setObjectName("eyebrow")
+        left.layout.addWidget(self.workspace_status)
 
         self.workspace_title = QLabel("No saved workspace yet")
         self.workspace_title.setObjectName("cardTitle")
+        self.workspace_title.setWordWrap(True)
         left.layout.addWidget(self.workspace_title)
 
         self.workspace_meta = QLabel(
-            "Session continuity is being built on top of project, file, task and memory context."
+            "Register or open a project through JARVIS to make it resumable."
         )
         self.workspace_meta.setWordWrap(True)
         self.workspace_meta.setObjectName("body")
         left.layout.addWidget(self.workspace_meta)
+
+        self.workspace_next = QLabel("Next action will appear here when captured.")
+        self.workspace_next.setWordWrap(True)
+        self.workspace_next.setObjectName("workspaceNext")
+        left.layout.addWidget(self.workspace_next)
         left.layout.addStretch()
 
-        resume = QPushButton("Resume workspace")
-        resume.setEnabled(False)
-        left.layout.addWidget(resume)
+        self.resume_button = QPushButton("Continue workspace")
+        self.resume_button.setObjectName("primaryButton")
+        self.resume_button.setEnabled(False)
+        self.resume_button.clicked.connect(self.workspace_resume_requested.emit)
+        left.layout.addWidget(self.resume_button)
+
+        self.context_button = QPushButton("View workspace context")
+        self.context_button.setEnabled(False)
+        self.context_button.clicked.connect(lambda: self.command_submitted.emit("workspace"))
+        left.layout.addWidget(self.context_button)
 
         center = Surface()
         center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -238,13 +250,41 @@ class JarvisHome(QWidget):
         self.presence = PresenceCore()
         center.layout.addWidget(self.presence, alignment=Qt.AlignHCenter)
 
+        quick_actions = QHBoxLayout()
+        quick_actions.setSpacing(8)
+        continue_action = QPushButton("Continue")
+        continue_action.setObjectName("quickButton")
+        continue_action.clicked.connect(self.workspace_resume_requested.emit)
+        self.continue_action = continue_action
+        self.continue_action.setEnabled(False)
+
+        brief_action = QPushButton("Today's brief")
+        brief_action.setObjectName("quickButton")
+        brief_action.clicked.connect(lambda: self.command_submitted.emit("daily brief"))
+
+        tasks_action = QPushButton("Active tasks")
+        tasks_action.setObjectName("quickButton")
+        tasks_action.clicked.connect(lambda: self.command_submitted.emit("tasks"))
+
+        files_action = QPushButton("File intelligence")
+        files_action.setObjectName("quickButton")
+        files_action.clicked.connect(lambda: self.command_submitted.emit("file index status"))
+
+        quick_actions.addStretch()
+        quick_actions.addWidget(continue_action)
+        quick_actions.addWidget(brief_action)
+        quick_actions.addWidget(tasks_action)
+        quick_actions.addWidget(files_action)
+        quick_actions.addStretch()
+        center.layout.addLayout(quick_actions)
+
         self.conversation = QTextBrowser()
         self.conversation.setObjectName("conversation")
         self.conversation.setOpenExternalLinks(True)
         center.layout.addWidget(self.conversation, 1)
         self.append_message(
             "jarvis",
-            "I'm online. The Home experience is now the primary interface; diagnostics remain secondary.",
+            "I'm ready. Continue your workspace, ask for context, or give me a new goal.",
         )
 
         command_row = QHBoxLayout()
@@ -254,6 +294,7 @@ class JarvisHome(QWidget):
         self.listen_button = QPushButton("◉")
         self.listen_button.setToolTip("Voice input will connect here")
         self.send_button = QPushButton("Send")
+        self.send_button.setObjectName("primaryButton")
         self.send_button.clicked.connect(self._submit_command)
         command_row.addWidget(self.input, 1)
         command_row.addWidget(self.listen_button)
@@ -264,8 +305,8 @@ class JarvisHome(QWidget):
         right_column.setSpacing(16)
 
         today = Surface("TODAY")
-        today.setMinimumWidth(270)
-        today.setMaximumWidth(360)
+        today.setMinimumWidth(280)
+        today.setMaximumWidth(370)
         self.today_label = QLabel("No active commitments loaded yet.")
         self.today_label.setObjectName("body")
         self.today_label.setWordWrap(True)
@@ -299,6 +340,11 @@ class JarvisHome(QWidget):
         content.addWidget(center, 1)
         content.addLayout(right_column)
         root.addLayout(content, 1)
+
+        self.session_strip = QLabel("SESSION CONTINUITY  •  WAITING FOR WORKSPACE")
+        self.session_strip.setObjectName("sessionStrip")
+        self.session_strip.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.session_strip)
 
         dock = QFrame()
         dock.setObjectName("dock")
@@ -365,13 +411,21 @@ class JarvisHome(QWidget):
 
             QLabel#cardTitle {{
                 color: {ACCENT_SOFT};
-                font-size: 16px;
+                font-size: 17px;
                 font-weight: 650;
             }}
 
             QLabel#body, QLabel#muted {{
                 color: {MUTED};
                 line-height: 1.4;
+            }}
+
+            QLabel#workspaceNext {{
+                color: {ACCENT_SOFT};
+                background: #0c1218;
+                border: 1px solid {BORDER};
+                border-radius: 10px;
+                padding: 10px;
             }}
 
             QLabel#pill, QLabel#statusPill {{
@@ -391,6 +445,17 @@ class JarvisHome(QWidget):
             QLabel#clock {{
                 color: {MUTED};
                 font-size: 12px;
+            }}
+
+            QLabel#sessionStrip {{
+                background: #0b1117;
+                border: 1px solid #18232e;
+                border-radius: 10px;
+                color: {MUTED};
+                padding: 7px 12px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
             }}
 
             QTextBrowser#conversation {{
@@ -432,6 +497,23 @@ class JarvisHome(QWidget):
             QPushButton:disabled {{
                 color: #4f5963;
                 background: #0d1218;
+            }}
+
+            QPushButton#primaryButton {{
+                background: #15333d;
+                border-color: #2f6672;
+                color: {ACCENT_SOFT};
+            }}
+
+            QPushButton#primaryButton:hover {{
+                background: #1c4652;
+                border-color: {ACCENT};
+            }}
+
+            QPushButton#quickButton {{
+                padding: 7px 11px;
+                color: {MUTED};
+                font-size: 11px;
             }}
 
             QFrame#dock {{
@@ -480,6 +562,31 @@ class JarvisHome(QWidget):
     def set_runtime_status(self, text, state="idle"):
         self.presence_status.setText(str(text).upper())
         self.presence.set_state(state)
+
+    def set_workspace(self, name, details, resumable=True, next_action=None):
+        self.workspace_status.setText("RESUMABLE SESSION" if resumable else "WORKSPACE CONTEXT")
+        self.workspace_title.setText(str(name))
+        self.workspace_meta.setText("\n".join(details) if details else "Context available.")
+        self.workspace_next.setText(
+            f"Next: {next_action}" if next_action else "Next: Continue from the latest saved session."
+        )
+        self.resume_button.setEnabled(bool(resumable))
+        self.context_button.setEnabled(True)
+        self.continue_action.setEnabled(bool(resumable))
+        self.session_strip.setText(
+            "SESSION CONTINUITY  •  READY TO RESUME" if resumable
+            else "SESSION CONTINUITY  •  CONTEXT AVAILABLE"
+        )
+
+    def set_workspace_empty(self):
+        self.workspace_status.setText("NO SAVED CONTEXT")
+        self.workspace_title.setText("No saved workspace yet")
+        self.workspace_meta.setText("Register or open a project through JARVIS to make it resumable.")
+        self.workspace_next.setText("Next action will appear here when captured.")
+        self.resume_button.setEnabled(False)
+        self.context_button.setEnabled(False)
+        self.continue_action.setEnabled(False)
+        self.session_strip.setText("SESSION CONTINUITY  •  WAITING FOR WORKSPACE")
 
     def set_tasks(self, lines):
         self.tasks_label.setText("\n".join(lines) if lines else "No active JARVIS tasks.")
