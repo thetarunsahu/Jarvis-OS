@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from core.policy_engine import PermissionLevel, PolicyEngine
+from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.file_tools import FileTools
 from tools.productivity_tools import ProductivityTools
 from tools.system_tools import SystemTools
@@ -33,9 +34,15 @@ class ToolSpec:
 class ToolRegistry:
     """Registry of executable actions protected by PolicyEngine."""
 
-    def __init__(self, policy_engine=None, productivity_tools=None):
+    def __init__(
+        self,
+        policy_engine=None,
+        productivity_tools=None,
+        file_intelligence_tools=None,
+    ):
         self.policy = policy_engine or PolicyEngine()
         self.productivity = productivity_tools or ProductivityTools()
+        self.file_intelligence = file_intelligence_tools or FileIntelligenceTools()
         self.tools = {}
         self._register_defaults()
 
@@ -84,6 +91,57 @@ class ToolRegistry:
         )
         self.register(
             ToolSpec(
+                name="index_files",
+                handler=self.file_intelligence.index_files,
+                description=(
+                    "Refresh JARVIS's local searchable file index for the "
+                    "configured index roots. Use this before descriptive file "
+                    "search when the index may be stale."
+                ),
+                permission_level=PermissionLevel.SAFE,
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="search_files",
+                handler=self.file_intelligence.search_files,
+                description=(
+                    "Search indexed local files by filename, path, or extracted "
+                    "text using descriptive words instead of requiring an exact "
+                    "filename."
+                ),
+                permission_level=PermissionLevel.READ,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Words describing the file to find.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 10,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="file_index_status",
+                handler=self.file_intelligence.file_index_status,
+                description=(
+                    "Show how many files JARVIS has indexed and which roots "
+                    "are currently configured."
+                ),
+                permission_level=PermissionLevel.READ,
+            )
+        )
+        self.register(
+            ToolSpec(
                 name="create_goal",
                 handler=self.productivity.create_goal,
                 description="Create a personal goal for the user.",
@@ -97,9 +155,7 @@ class ToolRegistry:
                         },
                         "target_date": {
                             "type": "string",
-                            "description": (
-                                "Optional ISO-8601 target date or datetime."
-                            ),
+                            "description": "Optional ISO-8601 target date or datetime.",
                         },
                     },
                     "required": ["title"],
@@ -133,9 +189,7 @@ class ToolRegistry:
                         },
                         "due_at": {
                             "type": "string",
-                            "description": (
-                                "Timezone-aware ISO-8601 reminder datetime."
-                            ),
+                            "description": "Timezone-aware ISO-8601 reminder datetime.",
                         },
                     },
                     "required": ["text", "due_at"],
