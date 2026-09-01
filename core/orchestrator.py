@@ -6,6 +6,7 @@ from core.intent_engine import IntentEngine
 from core.task import TaskStatus
 from models.model_router import ModelRouter
 from observability.audit_log import AuditLogger
+from productivity.reminder_scheduler import ReminderScheduler
 from tasks.background_runtime import BackgroundTaskRuntime
 from tasks.task_manager import TaskManager
 from tasks.task_store import TaskStore
@@ -30,6 +31,7 @@ class Orchestrator:
         agent_router=None,
         context_builder=None,
         audit_logger=None,
+        reminder_scheduler=None,
     ):
         self.intent_engine = intent_engine or IntentEngine()
         self.model_router = model_router or ModelRouter()
@@ -52,6 +54,19 @@ class Orchestrator:
             task_manager=self.task_manager,
             verifier=self.verifier,
         )
+
+        if reminder_scheduler is not None:
+            self.reminder_scheduler = reminder_scheduler
+        elif hasattr(self.tools, "productivity"):
+            self.reminder_scheduler = ReminderScheduler(
+                store=self.tools.productivity.store,
+                event_bus=self.event_bus,
+            )
+        else:
+            self.reminder_scheduler = None
+
+        if self.reminder_scheduler is not None:
+            self.reminder_scheduler.start()
 
     def handle(self, user_input, context=None):
         task = self.intent_engine.analyze(user_input)
@@ -110,4 +125,6 @@ class Orchestrator:
         return self.task_manager.list(limit=limit, status=status)
 
     def shutdown(self):
+        if self.reminder_scheduler is not None:
+            self.reminder_scheduler.stop(wait=False)
         self.runtime.shutdown(wait=False)
