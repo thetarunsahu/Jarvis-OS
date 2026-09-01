@@ -1,5 +1,6 @@
 from core.brain import Brain
 from memory.memory_manager import MemoryManager
+from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.file_tools import FileTools
 from tools.system_tools import SystemTools
 
@@ -8,6 +9,7 @@ class CommandRouter:
     def __init__(self):
         self.memory = MemoryManager()
         self.brain = Brain(memory_manager=self.memory)
+        self.file_intelligence = FileIntelligenceTools()
 
     def route(self, user_input):
         command = user_input.lower().strip()
@@ -29,6 +31,18 @@ class CommandRouter:
 
         if command in ["list files", "files", "show files"]:
             return self.list_files()
+
+        if command in ["index files", "refresh file index", "reindex files"]:
+            return self.index_files()
+
+        if command in ["file index", "file index status"]:
+            return self.file_index_status()
+
+        if command.startswith("find file "):
+            return self.search_files(user_input[10:].strip())
+
+        if command.startswith("search files "):
+            return self.search_files(user_input[13:].strip())
 
         if command in ["tasks", "show tasks", "list tasks"]:
             return self.list_tasks()
@@ -68,6 +82,10 @@ class CommandRouter:
             "  • time\n"
             "  • system info\n"
             "  • list files\n"
+            "  • index files\n"
+            "  • file index status\n"
+            "  • find file <description>\n"
+            "  • search files <query>\n"
             "  • tasks\n"
             "  • task <id>\n"
             "  • remember key = value\n"
@@ -94,6 +112,43 @@ class CommandRouter:
 
     def list_files(self):
         return FileTools.list_files()
+
+    def index_files(self):
+        result = self.file_intelligence.index_files()
+        roots = "\n".join(f"  - {root}" for root in result["roots"])
+        return (
+            f"File index refreshed. Indexed {result['indexed']} files "
+            f"({result['skipped']} skipped).\n"
+            f"FTS5: {'enabled' if result['fts'] else 'fallback search'}\n"
+            f"Roots:\n{roots}"
+        )
+
+    def file_index_status(self):
+        status = self.file_intelligence.file_index_status()
+        roots = "\n".join(f"  - {root}" for root in status["roots"])
+        return (
+            f"Indexed files: {status['files']}\n"
+            f"Indexed bytes: {status['bytes']}\n"
+            f"FTS5: {'enabled' if status['fts'] else 'fallback search'}\n"
+            f"Roots:\n{roots}"
+        )
+
+    def search_files(self, query):
+        if not query:
+            return "Use: find file <description>"
+
+        result = self.file_intelligence.search_files(query=query, limit=10)
+        matches = result["matches"]
+        if not matches:
+            return (
+                f"No indexed files matched '{query}'. "
+                "Run 'index files' if the index may be stale."
+            )
+
+        lines = []
+        for match in matches:
+            lines.append(f"- {match['name']}\n  {match['path']}")
+        return f"File matches for '{query}':\n" + "\n".join(lines)
 
     def list_tasks(self):
         tasks = self.brain.list_tasks(limit=10)
