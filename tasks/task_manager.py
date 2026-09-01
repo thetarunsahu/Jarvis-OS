@@ -122,5 +122,21 @@ class TaskManager:
     def get(self, task_id):
         return self.store.get(task_id)
 
+    def find(self, task_reference):
+        reference = task_reference.strip().lower()
+        if not reference:
+            return None
+
+        exact = self.store.get(reference)
+        if exact is not None:
+            return exact
+
+        matches = [
+            task
+            for task in self.store.list(limit=200)
+            if task.task_id.lower().startswith(reference)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def list(self, limit=50, status=None):
         return self.store.list(limit=limit, status=status)
