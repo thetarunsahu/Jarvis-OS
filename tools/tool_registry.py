@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from core.approval_manager import ApprovalManager
 from core.policy_engine import PermissionLevel, PolicyEngine
 from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.file_tools import FileTools
@@ -39,10 +40,12 @@ class ToolRegistry:
         policy_engine=None,
         productivity_tools=None,
         file_intelligence_tools=None,
+        approval_manager=None,
     ):
         self.policy = policy_engine or PolicyEngine()
         self.productivity = productivity_tools or ProductivityTools()
         self.file_intelligence = file_intelligence_tools or FileIntelligenceTools()
+        self.approvals = approval_manager or ApprovalManager()
         self.tools = {}
         self._register_defaults()
 
@@ -214,6 +217,7 @@ class ToolRegistry:
         if spec is None:
             return f"Unknown tool: {tool_name}"
 
+        arguments = arguments or {}
         decision = self.policy.evaluate(
             action=tool_name,
             permission_level=spec.permission_level,
@@ -221,15 +225,51 @@ class ToolRegistry:
         )
 
         if not decision.allowed:
-            return f"Confirmation required: {decision.reason}"
+            request = self.approvals.create(
+                action=tool_name,
+                arguments=arguments,
+                permission_level=spec.permission_level,
+                reason=decision.reason,
+            )
+            return (
+                f"Approval required [{request['approval_id'][:8]}]: "
+                f"{decision.reason} Use 'approve {request['approval_id'][:8]}' "
+                "or 'deny <id>'."
+            )
 
         try:
-            arguments = arguments or {}
             return spec.handler(**arguments)
         except TypeError as error:
             return f"Invalid tool arguments for {tool_name}: {error}"
         except Exception as error:
             return f"Tool execution failed: {error}"
+
+    def list_pending_approvals(self, limit=20):
+        return self.approvals.list(status="pending", limit=limit)
+
+    def resolve_approval(self, reference, approved):
+        request = self.approvals.find(reference)
+        if request is None:
+            return f"No unique approval request matches '{reference}'."
+
+        if request["status"] != "pending":
+            return (
+                f"Approval {request['approval_id'][:8]} is already "
+                f"{request['status']}."
+            )
+
+        if not approved:
+            self.approvals.resolve(request["approval_id"], "denied")
+            return f"Denied approval {request['approval_id'][:8]} for {request['action']}."
+
+        result = self.execute(
+            request["action"],
+            arguments=request["arguments"],
+            approved=True,
+        )
+        status = "failed" if str(result).startswith(("Tool execution failed", "Invalid tool")) else "executed"
+        self.approvals.resolve(request["approval_id"], status, result=result)
+        return result
 
     def get_tool_definitions(self):
         return [spec.definition() for spec in self.tools.values()]
