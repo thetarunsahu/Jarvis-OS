@@ -49,7 +49,7 @@ class ReminderScheduler:
         return due
 
     def _loop(self):
-        while not self._stop.is_set():
+        while not self._stop.wait(self.poll_seconds):
             try:
                 self.check_now()
             except Exception as error:
@@ -57,4 +57,3 @@ class ReminderScheduler:
                     "reminder.scheduler_error",
                     error=str(error),
                 )
-            self._stop.wait(self.poll_seconds)
