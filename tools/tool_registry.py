@@ -261,7 +261,7 @@ class ToolRegistry:
     def register(self, spec):
         self.tools[spec.name] = spec
 
-    def execute(self, tool_name, arguments=None, approved=False):
+    def execute(self, tool_name, arguments=None, approved=False, task_id=None):
         spec = self.tools.get(tool_name)
 
         if spec is None:
@@ -280,6 +280,7 @@ class ToolRegistry:
                 arguments=arguments,
                 permission_level=spec.permission_level,
                 reason=decision.reason,
+                task_id=task_id,
             )
             return (
                 f"Approval required [{request['approval_id'][:8]}]: "
@@ -316,6 +317,7 @@ class ToolRegistry:
             request["action"],
             arguments=request["arguments"],
             approved=True,
+            task_id=request.get("task_id"),
         )
         status = "failed" if str(result).startswith(("Tool execution failed", "Invalid tool")) else "executed"
         self.approvals.resolve(request["approval_id"], status, result=result)
