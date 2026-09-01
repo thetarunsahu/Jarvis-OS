@@ -1,13 +1,50 @@
-from .router import CommandRouter
+from __future__ import annotations
+
+from core.events import EventBus
+from core.orchestrator import JarvisOrchestrator
+from core.state import JarvisState
+from core.task_runtime import TaskPlan, TaskReport
+from security.permissions import Approver, PermissionDecision, PermissionRequest
 
 
 class Jarvis:
-    def __init__(self):
-        self.name = "JARVIS"
-        self.version = "0.1.1"
-        self.router = CommandRouter()
+    """Public JARVIS application service used by CLI, GUI, and voice clients."""
 
-    def start(self):
+    def __init__(self) -> None:
+        self.name = "JARVIS"
+        self.version = "0.3.0-dev"
+        self.events = EventBus()
+        self.orchestrator = JarvisOrchestrator(events=self.events)
+
+    @property
+    def state(self):
+        return self.orchestrator.state
+
+    def process(self, user_input: str) -> str:
+        return self.orchestrator.process(user_input)
+
+    def run_plan(self, plan: TaskPlan) -> TaskReport:
+        """Execute a validated multi-step plan through permissions and tools."""
+        return self.orchestrator.run_plan(plan)
+
+    def set_runtime_state(self, state: JarvisState) -> None:
+        """Expose modality states such as LISTENING and SPEAKING to clients."""
+        self.orchestrator.set_state(state)
+
+    def set_permission_approver(self, approver: Approver | None) -> None:
+        """Attach a client-specific approval callback for side-effecting tools."""
+        self.orchestrator.set_permission_approver(approver)
+
+    def subscribe(self, event_name: str, callback) -> None:
+        self.events.subscribe(event_name, callback)
+
+    def unsubscribe(self, event_name: str, callback) -> None:
+        self.events.unsubscribe(event_name, callback)
+
+    def start(self) -> None:
+        """Run the terminal interface using the shared orchestrator."""
+        self.set_permission_approver(self._cli_permission_approver)
+
         print("=" * 50)
         print("                 J A R V I S")
         print("=" * 50)
@@ -29,13 +66,18 @@ class Jarvis:
             response = self.process(user_input)
             print(f"JARVIS: {response}\n")
 
-    def process(self, user_input):
-        response = self.router.route(user_input)
+    @staticmethod
+    def _cli_permission_approver(
+        request: PermissionRequest,
+    ) -> PermissionDecision:
+        print("\nJARVIS PERMISSION REQUEST")
+        print(f"Tool   : {request.tool_name}")
+        print(f"Risk   : {request.level.value}")
+        print(f"Reason : {request.reason}")
+        if request.arguments:
+            print(f"Args   : {request.arguments}")
 
-        if response is not None:
-            return response
-
-        return (
-            "I don't understand that command yet. "
-            "Type 'help' to see what I can currently do."
-        )
+        answer = input("Allow this action? [y/N]: ").strip().lower()
+        if answer in {"y", "yes"}:
+            return PermissionDecision.ALLOW
+        return PermissionDecision.DENY

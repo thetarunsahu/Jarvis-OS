@@ -23,5 +23,11 @@ Thumbs.db
 *.log
 *.tmp
 
+# Runtime JARVIS memory (local/private)
+memory/data/*.json
+memory/data/*.db
+memory/data/*.sqlite
+memory/data/*.sqlite3
+
 # Local model data
 Qwen3 8B/
