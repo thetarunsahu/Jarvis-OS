@@ -31,6 +31,7 @@ class ApprovalManager:
                 """
                 CREATE TABLE IF NOT EXISTS approval_requests (
                     approval_id TEXT PRIMARY KEY,
+                    task_id TEXT,
                     action TEXT NOT NULL,
                     arguments_json TEXT NOT NULL,
                     permission_level INTEGER NOT NULL,
@@ -42,19 +43,37 @@ class ApprovalManager:
                 )
                 """
             )
+            self._ensure_column(
+                connection,
+                table="approval_requests",
+                column="task_id",
+                definition="TEXT",
+            )
 
-    def create(self, action, arguments, permission_level, reason=None):
+    @staticmethod
+    def _ensure_column(connection, table, column, definition):
+        columns = {
+            row[1]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
+
+    def create(self, action, arguments, permission_level, reason=None, task_id=None):
         approval_id = str(uuid4())
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO approval_requests (
-                    approval_id, action, arguments_json, permission_level,
+                    approval_id, task_id, action, arguments_json, permission_level,
                     reason, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     approval_id,
+                    task_id,
                     action,
                     json.dumps(arguments or {}, ensure_ascii=False, default=str),
                     int(permission_level),
@@ -100,6 +119,19 @@ class ApprovalManager:
         parameters = []
         if status:
             query += " WHERE status = ?"
+            parameters.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        parameters.append(max(1, min(100, int(limit))))
+
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [self._deserialize(row) for row in rows]
+
+    def list_for_task(self, task_id, status="pending", limit=20):
+        query = "SELECT * FROM approval_requests WHERE task_id = ?"
+        parameters = [task_id]
+        if status:
+            query += " AND status = ?"
             parameters.append(status)
         query += " ORDER BY created_at DESC LIMIT ?"
         parameters.append(max(1, min(100, int(limit))))
