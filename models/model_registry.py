@@ -1,3 +1,4 @@
+from providers.lmstudio_provider import LMStudioProvider
 from providers.ollama_provider import OllamaProvider
 from providers.openai_provider import OpenAIProvider
 
@@ -11,6 +12,7 @@ class ModelRegistry:
 
     def __init__(self):
         self._factories = {
+            "lmstudio": LMStudioProvider,
             "ollama": OllamaProvider,
             "openai": OpenAIProvider,
         }
