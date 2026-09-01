@@ -5,6 +5,7 @@ from models.model_router import ModelRouter
 from tasks.background_runtime import BackgroundTaskRuntime
 from tasks.task_manager import TaskManager
 from tasks.task_store import TaskStore
+from tasks.verifier import BasicVerifier
 from tools.tool_registry import ToolRegistry
 
 
@@ -19,6 +20,7 @@ class Orchestrator:
         event_bus=None,
         task_store=None,
         task_manager=None,
+        verifier=None,
         runtime=None,
     ):
         self.intent_engine = intent_engine or IntentEngine()
@@ -30,8 +32,10 @@ class Orchestrator:
             store=self.task_store,
             event_bus=self.event_bus,
         )
+        self.verifier = verifier or BasicVerifier()
         self.runtime = runtime or BackgroundTaskRuntime(
             task_manager=self.task_manager,
+            verifier=self.verifier,
         )
 
     def handle(self, user_input, context=None):
@@ -51,6 +55,14 @@ class Orchestrator:
         try:
             self.task_manager.transition(task, TaskStatus.RUNNING)
             result = self._execute(task, context=context)
+            self.task_manager.transition(task, TaskStatus.VERIFYING)
+
+            verification = self.verifier.verify(task, result)
+            if not verification.passed:
+                raise RuntimeError(
+                    f"Verification failed: {verification.reason}"
+                )
+
             self.task_manager.complete(task, result=result)
             return result
         except Exception as error:
