@@ -84,7 +84,7 @@ class JarvisApp(JarvisHome):
             scheduler.check_now()
 
     def _ensure_jarvis_workspace(self):
-        """Register the current repository as the first real resumable workspace."""
+        """Register and refresh the current repository as a resumable workspace."""
         project_root = Path(__file__).resolve().parents[1]
         try:
             workspace = self.sessions.register_workspace(
@@ -93,11 +93,19 @@ class JarvisApp(JarvisHome):
                 repo_url="https://github.com/thetarunsahu/Jarvis-OS",
                 preferred_app="vscode",
             )
-            if self.sessions.store.latest_session(workspace["workspace_id"]) is None:
+            previous = self.sessions.store.latest_session(workspace["workspace_id"])
+            if previous is None:
                 self.sessions.capture_session(
                     workspace["workspace_id"],
                     state={"next_action": "Continue JARVIS development"},
                     summary="JARVIS development workspace initialized.",
+                )
+            else:
+                # Refresh git/project/recent-file facts on every launch while
+                # retaining the user's continuity fields and prior summary.
+                self.sessions.capture_session(
+                    workspace["workspace_id"],
+                    summary=previous.get("summary") or "JARVIS workspace refreshed.",
                 )
         except Exception as error:
             self.append_message("jarvis", f"Workspace continuity could not initialize: {error}")
@@ -113,10 +121,14 @@ class JarvisApp(JarvisHome):
         state = session.get("state") or {}
 
         details = []
+        project_kind = state.get("project_kind")
         branch = state.get("git_branch")
         git_status = state.get("git_status")
         open_files = state.get("open_files") or []
+        recent_files = state.get("recent_files") or []
 
+        if project_kind:
+            details.append(f"Project  ·  {project_kind}")
         if branch:
             details.append(f"Branch  ·  {branch}")
         if git_status:
@@ -126,6 +138,8 @@ class JarvisApp(JarvisHome):
             details.append("Working tree  ·  clean / not captured")
         if open_files:
             details.append(f"Open files  ·  {len(open_files)} captured")
+        if recent_files:
+            details.append("Recent  ·  " + ", ".join(recent_files[:3]))
         if session.get("summary"):
             details.append(session["summary"])
 
