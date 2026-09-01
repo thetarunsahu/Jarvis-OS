@@ -1,7 +1,7 @@
 import os
 
-from providers.ai_provider import ProviderError
 from models.model_registry import ModelRegistry
+from providers.ai_provider import ProviderError
 
 
 class ModelRouter:
@@ -9,11 +9,14 @@ class ModelRouter:
 
     def __init__(self, registry=None):
         self.registry = registry or ModelRegistry()
-        self.default_provider = os.getenv("JARVIS_PROVIDER", "auto").lower().strip()
+        configured_default = os.getenv(
+            "JARVIS_PROVIDER",
+            os.getenv("AI_PROVIDER", "auto"),
+        )
+        self.default_provider = configured_default.lower().strip()
 
     def _candidate_names(self, task, tools=None):
         preferred = task.preferred_provider or self.default_provider
-
         names = self.registry.names()
 
         if preferred != "auto":
@@ -29,6 +32,7 @@ class ModelRouter:
                 ),
             )
 
+        # If a task may need tools, prefer providers that can actually call them.
         if tools:
             ordered = sorted(
                 ordered,
@@ -43,7 +47,7 @@ class ModelRouter:
         for name in self._candidate_names(task, tools=tools):
             try:
                 provider = self.registry.get(name)
-            except (KeyError, Exception) as error:
+            except Exception as error:
                 errors.append(f"{name}: {error}")
                 continue
 
