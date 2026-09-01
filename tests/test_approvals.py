@@ -14,11 +14,24 @@ class DummyProductivityTools:
     def list_goals(self):
         return []
 
+    def update_goal(self, goal_id, progress=None, status=None):
+        return {
+            "goal_id": goal_id,
+            "progress": progress,
+            "status": status,
+        }
+
     def create_reminder(self, text, due_at):
         return {"text": text, "due_at": due_at}
 
     def list_reminders(self):
         return []
+
+    def complete_reminder(self, reminder_id):
+        return {"reminder_id": reminder_id, "status": "completed"}
+
+    def daily_brief(self):
+        return "No commitments."
 
 
 class DummyFileIntelligenceTools:
