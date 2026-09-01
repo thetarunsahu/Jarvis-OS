@@ -1,10 +1,18 @@
+import os
+
 import ollama
 
+from providers.ai_provider import AIProvider, ProviderError
 
-class OllamaProvider:
+
+class OllamaProvider(AIProvider):
+    name = "ollama"
+    local = True
+    supports_tools = True
 
     def __init__(self):
-        self.model = "qwen3:8b"
+        self.model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+        self.status = "READY"
 
         self.system_prompt = """
 You are JARVIS, a local personal AI assistant.
@@ -22,69 +30,55 @@ Important rules:
     def generate(
         self,
         user_input,
+        context=None,
         tools=None,
-        executor=None
+        executor=None,
     ):
-
         messages = [
             {
                 "role": "system",
-                "content": self.system_prompt
-            },
-            {
-                "role": "user",
-                "content": "/no_think\n" + user_input
+                "content": self.system_prompt,
             }
         ]
 
-        response = ollama.chat(
-            model=self.model,
-            messages=messages,
-            tools=tools or []
+        if context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"Relevant JARVIS context:\n{context}",
+                }
+            )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": "/no_think\n" + user_input,
+            }
         )
 
-        # -----------------------------------------
-        # NO TOOL CALL
-        # -----------------------------------------
+        try:
+            response = ollama.chat(
+                model=self.model,
+                messages=messages,
+                tools=tools or [],
+            )
+        except Exception as error:
+            self.status = "UNAVAILABLE"
+            raise ProviderError(f"Ollama request failed: {error}") from error
 
         if not response.message.tool_calls:
             return response.message.content
 
-        # -----------------------------------------
-        # TOOL CALL
-        # -----------------------------------------
-
         messages.append(response.message)
 
         for tool_call in response.message.tool_calls:
-
             tool_name = tool_call.function.name
             arguments = tool_call.function.arguments or {}
 
-            print(
-                f"JARVIS TOOL: {tool_name}"
-            )
-
-            print(
-                f"ARGUMENTS: {arguments}"
-            )
-
             if executor:
-
-                result = executor(
-                    tool_name,
-                    arguments
-                )
-
+                result = executor(tool_name, arguments)
             else:
-
-                result = (
-                    "Tool executor is unavailable."
-                )
-
-            print(
-                f"TOOL RESULT: {result}"
-            )
+                result = "Tool executor is unavailable."
 
             messages.append(
                 {
@@ -93,13 +87,16 @@ Important rules:
                 }
             )
 
-        # -----------------------------------------
-        # ASK QWEN FOR FINAL RESPONSE
-        # -----------------------------------------
+        try:
+            final_response = ollama.chat(
+                model=self.model,
+                messages=messages,
+            )
+        except Exception as error:
+            self.status = "UNAVAILABLE"
+            raise ProviderError(
+                f"Ollama final response failed: {error}"
+            ) from error
 
-        final_response = ollama.chat(
-            model=self.model,
-            messages=messages
-        )
-
+        self.status = "READY"
         return final_response.message.content
