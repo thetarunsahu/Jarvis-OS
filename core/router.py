@@ -50,6 +50,15 @@ class CommandRouter:
         if command.startswith("task "):
             return self.task_status(user_input[5:].strip())
 
+        if command in ["approvals", "pending approvals"]:
+            return self.list_approvals()
+
+        if command.startswith("approve "):
+            return self.brain.resolve_approval(user_input[8:].strip(), approved=True)
+
+        if command.startswith("deny "):
+            return self.brain.resolve_approval(user_input[5:].strip(), approved=False)
+
         if command == "memories":
             return self.memory.get_all()
 
@@ -88,6 +97,9 @@ class CommandRouter:
             "  • search files <query>\n"
             "  • tasks\n"
             "  • task <id>\n"
+            "  • approvals\n"
+            "  • approve <id>\n"
+            "  • deny <id>\n"
             "  • remember key = value\n"
             "  • recall <key>\n"
             "  • forget <key>\n"
@@ -181,3 +193,16 @@ class CommandRouter:
         if task.error:
             details.append(f"Error: {task.error}")
         return "\n".join(details)
+
+    def list_approvals(self):
+        approvals = self.brain.list_approvals(limit=20)
+        if not approvals:
+            return "No pending approvals."
+
+        lines = []
+        for request in approvals:
+            lines.append(
+                f"{request['approval_id'][:8]}  {request['action']}  "
+                f"level={request['permission_level']}"
+            )
+        return "Pending approvals:\n" + "\n".join(lines)
