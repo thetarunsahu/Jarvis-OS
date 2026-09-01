@@ -55,10 +55,61 @@ class ToolRegistry:
                 name="list_files",
                 handler=FileTools.list_files,
                 description=(
-                    "List files and directories in the current "
-                    "JARVIS project directory."
+                    "List files and directories inside JARVIS's configured "
+                    "read-only filesystem roots."
                 ),
                 permission_level=PermissionLevel.READ,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Directory path or project-relative path.",
+                            "default": ".",
+                        }
+                    },
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="read_text_file",
+                handler=FileTools.read_text_file,
+                description=(
+                    "Read UTF-8 text from a file inside JARVIS's allowed roots. "
+                    "Use this to inspect source code, notes, markdown, JSON, and "
+                    "other text files before reasoning about their contents."
+                ),
+                permission_level=PermissionLevel.READ,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 20000,
+                        },
+                    },
+                    "required": ["path"],
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="file_info",
+                handler=FileTools.file_info,
+                description=(
+                    "Inspect metadata for a file or directory inside JARVIS's "
+                    "allowed filesystem roots."
+                ),
+                permission_level=PermissionLevel.READ,
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
             )
         )
         self.register(
