@@ -25,6 +25,23 @@ class CommandWorker(QObject):
             self.failed.emit(str(error))
 
 
+class JarvisEventBridge(QObject):
+    """Moves background JARVIS events safely onto the Qt UI thread."""
+
+    reminder_due = Signal(str)
+    task_completed = Signal(str)
+    task_failed = Signal(str)
+
+    def on_reminder_due(self, event):
+        self.reminder_due.emit(str(event.payload.get("text", "Reminder due")))
+
+    def on_task_completed(self, event):
+        self.task_completed.emit(str(event.payload.get("task_id", "")))
+
+    def on_task_failed(self, event):
+        self.task_failed.emit(str(event.payload.get("task_id", "")))
+
+
 class JarvisApp(JarvisHUD):
     """Functional desktop shell wired to the JARVIS core.
 
@@ -59,10 +76,24 @@ class JarvisApp(JarvisHUD):
 
         self.input.returnPressed.connect(self.execute_command)
 
+        self.event_bridge = JarvisEventBridge(self)
+        event_bus = self.jarvis.router.brain.orchestrator.event_bus
+        event_bus.subscribe("reminder.due", self.event_bridge.on_reminder_due)
+        event_bus.subscribe("task.completed", self.event_bridge.on_task_completed)
+        event_bus.subscribe("task.failed", self.event_bridge.on_task_failed)
+
+        self.event_bridge.reminder_due.connect(self._show_reminder)
+        self.event_bridge.task_completed.connect(self._background_task_completed)
+        self.event_bridge.task_failed.connect(self._background_task_failed)
+
         self.task_timer = QTimer(self)
         self.task_timer.timeout.connect(self.refresh_tasks)
         self.task_timer.start(1200)
         self.refresh_tasks()
+
+        scheduler = self.jarvis.router.brain.orchestrator.reminder_scheduler
+        if scheduler is not None:
+            scheduler.check_now()
 
     def execute_command(self):
         command = self.input.text().strip()
@@ -111,6 +142,42 @@ class JarvisApp(JarvisHUD):
     def _clear_command_worker(self):
         self._command_thread = None
         self._command_worker = None
+
+    @Slot(str)
+    def _show_reminder(self, text):
+        QApplication.beep()
+        self.response_panel.set_lines(["REMINDER", text])
+        self.status.setText("REMINDER DUE")
+
+    @Slot(str)
+    def _background_task_completed(self, task_id):
+        task = self.jarvis.router.brain.get_task(task_id)
+        if task is None or not task.background:
+            return
+
+        message = f"Background task {task.task_id[:8]} completed."
+        if task.result:
+            message += f"\n{task.result}"
+        self.response_panel.set_lines([message])
+        self.status.setText("TASK COMPLETE")
+        QApplication.beep()
+        self.refresh_tasks()
+
+    @Slot(str)
+    def _background_task_failed(self, task_id):
+        task = self.jarvis.router.brain.get_task(task_id)
+        if task is None or not task.background:
+            return
+
+        self.response_panel.set_lines(
+            [
+                f"Background task {task.task_id[:8]} failed.",
+                task.error or "Unknown error.",
+            ]
+        )
+        self.status.setText("TASK FAILED")
+        QApplication.beep()
+        self.refresh_tasks()
 
     def refresh_tasks(self):
         try:
