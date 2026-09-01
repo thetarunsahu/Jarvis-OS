@@ -29,6 +29,9 @@ class CommandRouter:
         if command in ["system", "system info", "system information"]:
             return self.system_info()
 
+        if command in ["daily brief", "accountability brief", "today brief"]:
+            return self.brain.daily_brief()
+
         if command in ["list files", "files", "show files"]:
             return self.list_files()
 
@@ -90,6 +93,7 @@ class CommandRouter:
             "  • hello\n"
             "  • time\n"
             "  • system info\n"
+            "  • daily brief\n"
             "  • list files\n"
             "  • index files\n"
             "  • file index status\n"
