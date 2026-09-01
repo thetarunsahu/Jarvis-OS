@@ -58,6 +58,7 @@ class JarvisApp(JarvisHome):
 
         self.command_submitted.connect(self.execute_command)
         self.diagnostics_requested.connect(self.open_diagnostics)
+        self.workspace_resume_requested.connect(self.resume_latest_workspace)
 
         self.event_bridge = JarvisEventBridge(self)
         event_bus = self.jarvis.router.brain.orchestrator.event_bus
@@ -95,6 +96,7 @@ class JarvisApp(JarvisHome):
             if self.sessions.store.latest_session(workspace["workspace_id"]) is None:
                 self.sessions.capture_session(
                     workspace["workspace_id"],
+                    state={"next_action": "Continue JARVIS development"},
                     summary="JARVIS development workspace initialized.",
                 )
         except Exception as error:
@@ -103,29 +105,57 @@ class JarvisApp(JarvisHome):
     def refresh_workspace(self):
         plan = self.sessions.resume_plan()
         if not plan:
-            self.workspace_title.setText("No saved workspace yet")
-            self.workspace_meta.setText("Register a project to make it resumable here.")
+            self.set_workspace_empty()
             return
 
         workspace = plan["workspace"]
         session = plan.get("session") or {}
         state = session.get("state") or {}
 
-        lines = [workspace["root_path"]]
+        details = []
         branch = state.get("git_branch")
         git_status = state.get("git_status")
+        open_files = state.get("open_files") or []
+
         if branch:
-            lines.append(f"Branch: {branch}")
+            details.append(f"Branch  ·  {branch}")
         if git_status:
             changed = len([line for line in git_status.splitlines() if line.strip()])
-            lines.append(f"Working tree: {changed} change(s)")
+            details.append(f"Working tree  ·  {changed} change(s)")
         else:
-            lines.append("Working tree: clean or not captured")
+            details.append("Working tree  ·  clean / not captured")
+        if open_files:
+            details.append(f"Open files  ·  {len(open_files)} captured")
         if session.get("summary"):
-            lines.append(session["summary"])
+            details.append(session["summary"])
 
-        self.workspace_title.setText(workspace["name"])
-        self.workspace_meta.setText("\n".join(lines))
+        self.set_workspace(
+            workspace["name"],
+            details,
+            resumable=bool(plan.get("root_exists")),
+            next_action=state.get("next_action"),
+        )
+
+    @Slot()
+    def resume_latest_workspace(self):
+        """Resume the latest workspace directly from the Home surface."""
+        self.set_runtime_status("Restoring workspace", "working")
+        self.resume_button.setEnabled(False)
+        self.continue_action.setEnabled(False)
+
+        try:
+            result = self.sessions.resume_workspace()
+        except Exception as error:
+            result = {"ok": False, "message": f"Workspace resume failed: {error}"}
+
+        self.append_message("jarvis", result.get("message") or "Workspace resume finished.")
+        if result.get("ok"):
+            self.greeting.setText("Workspace restored.")
+            self.set_runtime_status("Workspace ready", "idle")
+        else:
+            self.set_runtime_status("Resume failed", "idle")
+
+        self.refresh_workspace()
 
     @Slot(str)
     def execute_command(self, command):
