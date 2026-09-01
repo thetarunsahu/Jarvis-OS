@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 
+from tools.application_tools import ApplicationTools
 from workspace.workspace_store import WorkspaceStore
 
 
@@ -54,11 +55,119 @@ class SessionManager:
             "root_exists": Path(workspace["root_path"]).exists(),
         }
 
+    def resume_workspace(self, reference=None, launch=True):
+        """Restore the latest workspace context and optionally launch its IDE.
+
+        This intentionally restores only deterministic, safe state today: the
+        project root, preferred application and recorded session metadata. Open
+        editor tabs, browser tabs and terminals remain future adapters instead
+        of being faked as already restored.
+        """
+        plan = self.resume_plan(reference)
+        if plan is None:
+            return {
+                "ok": False,
+                "message": "No matching workspace is registered.",
+                "plan": None,
+            }
+
+        workspace = plan["workspace"]
+        root = Path(workspace["root_path"])
+        if not root.exists() or not root.is_dir():
+            return {
+                "ok": False,
+                "message": f"Workspace path is unavailable: {root}",
+                "plan": plan,
+            }
+
+        launch_result = None
+        if launch:
+            launch_result = self._launch_workspace(workspace)
+            if not launch_result["ok"]:
+                return {
+                    "ok": False,
+                    "message": launch_result["message"],
+                    "plan": plan,
+                }
+
+        self.mark_resumed(workspace["workspace_id"])
+        latest = self.capture_session(
+            workspace["workspace_id"],
+            state={"resume_action": "launched" if launch else "planned"},
+            summary="Workspace resumed through JARVIS.",
+        )
+        plan["session"] = latest
+
+        message = f"Resumed workspace: {workspace['name']}"
+        if launch_result:
+            message += f"\n{launch_result['message']}"
+        return {
+            "ok": True,
+            "message": message,
+            "plan": plan,
+        }
+
+    def describe_resume(self, reference=None):
+        plan = self.resume_plan(reference)
+        if plan is None:
+            return "No matching workspace is registered."
+
+        workspace = plan["workspace"]
+        session = plan.get("session") or {}
+        state = session.get("state") or {}
+        lines = [
+            f"Workspace: {workspace['name']}",
+            f"Root: {workspace['root_path']}",
+            f"Preferred app: {workspace.get('preferred_app') or 'not set'}",
+        ]
+        if state.get("git_branch"):
+            lines.append(f"Git branch: {state['git_branch']}")
+        git_status = state.get("git_status")
+        if git_status:
+            changed = len([line for line in git_status.splitlines() if line.strip()])
+            lines.append(f"Working tree changes: {changed}")
+        if session.get("summary"):
+            lines.append(f"Last session: {session['summary']}")
+        return "\n".join(lines)
+
     def mark_resumed(self, reference=None):
         workspace = self.store.find_workspace(reference)
         if workspace is None:
             return None
         return self.store.touch_workspace(workspace["workspace_id"])
+
+    @staticmethod
+    def _launch_workspace(workspace):
+        app = str(workspace.get("preferred_app") or "vscode").strip().lower()
+        root = str(Path(workspace["root_path"]).resolve())
+        command = ApplicationTools.resolve(app)
+
+        if command is None:
+            return {
+                "ok": False,
+                "message": f"Preferred application '{app}' is not available.",
+            }
+
+        launch_command = [*command, root]
+        try:
+            subprocess.Popen(
+                launch_command,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as error:
+            return {
+                "ok": False,
+                "message": f"Could not launch {app}: {error}",
+            }
+
+        return {
+            "ok": True,
+            "message": f"Opened {workspace['name']} in {app}.",
+        }
 
     @staticmethod
     def _git_value(root, args):
