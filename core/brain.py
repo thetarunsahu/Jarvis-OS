@@ -1,15 +1,20 @@
+from core.context_builder import ContextBuilder
 from core.orchestrator import Orchestrator
 
 
 class Brain:
     """JARVIS intelligence entry point.
 
-    Brain is intentionally thin. Orchestrator owns task analysis, routing,
-    persistence, background execution, and model/tool coordination.
+    Brain stays intentionally thin. Orchestrator owns task analysis, routing,
+    persistence, background execution, context, and model/tool coordination.
     """
 
-    def __init__(self, orchestrator=None):
-        self.orchestrator = orchestrator or Orchestrator()
+    def __init__(self, orchestrator=None, memory_manager=None):
+        if orchestrator is not None:
+            self.orchestrator = orchestrator
+        else:
+            context_builder = ContextBuilder(memory_manager=memory_manager)
+            self.orchestrator = Orchestrator(context_builder=context_builder)
 
     def respond(self, user_input, context=None):
         return self.orchestrator.handle(user_input, context=context)
