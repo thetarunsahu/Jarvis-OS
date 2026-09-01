@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from workspace.session_manager import SessionManager
 from workspace.workspace_store import WorkspaceStore
@@ -40,6 +41,58 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(session["session_id"], plan["session"]["session_id"])
         self.assertEqual(plan["session"]["state"]["open_files"], ["README.md"])
         self.assertEqual(plan["session"]["state"]["next_action"], "Run tests")
+
+    def test_resume_workspace_without_launch_updates_session(self):
+        workspace = self.manager.register_workspace("Demo Project", self.project)
+        self.manager.capture_session(
+            workspace["workspace_id"],
+            state={"next_action": "Continue implementation"},
+            summary="Previous session.",
+        )
+
+        result = self.manager.resume_workspace("Demo Project", launch=False)
+
+        self.assertTrue(result["ok"])
+        self.assertIn("Resumed workspace: Demo Project", result["message"])
+        latest = self.store.latest_session(workspace["workspace_id"])
+        self.assertEqual(latest["summary"], "Workspace resumed through JARVIS.")
+        self.assertEqual(latest["state"]["resume_action"], "planned")
+
+    @patch("workspace.session_manager.subprocess.Popen")
+    @patch("workspace.session_manager.ApplicationTools.resolve")
+    def test_resume_workspace_launches_preferred_app_with_project_root(
+        self,
+        resolve,
+        popen,
+    ):
+        resolve.return_value = ["code"]
+        workspace = self.manager.register_workspace(
+            "Demo Project",
+            self.project,
+            preferred_app="vscode",
+        )
+        self.manager.capture_session(workspace["workspace_id"], state={})
+
+        result = self.manager.resume_workspace("Demo Project", launch=True)
+
+        self.assertTrue(result["ok"])
+        resolve.assert_called_once_with("vscode")
+        launch_command = popen.call_args.args[0]
+        self.assertEqual(launch_command[0], "code")
+        self.assertEqual(Path(launch_command[1]), self.project.resolve())
+        self.assertFalse(popen.call_args.kwargs["shell"])
+
+    @patch("workspace.session_manager.ApplicationTools.resolve", return_value=None)
+    def test_resume_workspace_reports_missing_preferred_app(self, resolve):
+        workspace = self.manager.register_workspace(
+            "Demo Project",
+            self.project,
+            preferred_app="vscode",
+        )
+        result = self.manager.resume_workspace(workspace["workspace_id"], launch=True)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("not available", result["message"])
 
     def test_workspace_database_closes_cleanly_on_windows(self):
         workspace = self.manager.register_workspace("Demo Project", self.project)
