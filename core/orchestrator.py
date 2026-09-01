@@ -122,18 +122,20 @@ class Orchestrator:
         )
         result = agent.execute(task, context=context)
 
-        pending = self.tools.approvals.list_for_task(
-            task.task_id,
-            status="pending",
-            limit=20,
-        )
-        if pending and task.status == TaskStatus.RUNNING:
-            self.task_manager.transition(task, TaskStatus.WAITING_APPROVAL)
-            self.event_bus.publish(
-                "approval.requested",
-                task_id=task.task_id,
-                approval_ids=[item["approval_id"] for item in pending],
+        approval_manager = getattr(self.tools, "approvals", None)
+        if approval_manager is not None:
+            pending = approval_manager.list_for_task(
+                task.task_id,
+                status="pending",
+                limit=20,
             )
+            if pending and task.status == TaskStatus.RUNNING:
+                self.task_manager.transition(task, TaskStatus.WAITING_APPROVAL)
+                self.event_bus.publish(
+                    "approval.requested",
+                    task_id=task.task_id,
+                    approval_ids=[item["approval_id"] for item in pending],
+                )
 
         return result
 
@@ -144,16 +146,19 @@ class Orchestrator:
         return self.task_manager.list(limit=limit, status=status)
 
     def list_approvals(self, limit=20):
+        if not hasattr(self.tools, "list_pending_approvals"):
+            return []
         return self.tools.list_pending_approvals(limit=limit)
 
     def resolve_approval(self, reference, approved):
-        request = self.tools.approvals.find(reference)
+        approval_manager = getattr(self.tools, "approvals", None)
+        request = approval_manager.find(reference) if approval_manager else None
         task = None
         if request and request.get("task_id"):
             task = self.task_manager.find(request["task_id"])
 
         result = self.tools.resolve_approval(reference, approved=approved)
-        resolved = self.tools.approvals.find(reference)
+        resolved = approval_manager.find(reference) if approval_manager else None
 
         self.event_bus.publish(
             "approval.resolved",
@@ -178,7 +183,7 @@ class Orchestrator:
             self.task_manager.fail(task, result)
             return result
 
-        remaining = self.tools.approvals.list_for_task(
+        remaining = approval_manager.list_for_task(
             task.task_id,
             status="pending",
             limit=20,
@@ -210,6 +215,8 @@ class Orchestrator:
         return result
 
     def daily_brief(self):
+        if not hasattr(self.tools, "productivity"):
+            return "Productivity tools are unavailable."
         return self.tools.productivity.daily_brief()
 
     def shutdown(self):
