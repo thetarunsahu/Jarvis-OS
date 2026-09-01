@@ -1,13 +1,12 @@
 from agents.model_agent import ModelAgent
+from agents.research_agent import ResearchAgent
 
 
 class AgentRegistry:
     """Registry of specialist JARVIS agents.
 
-    Agents stay lightweight until a capability needs its own runtime.
-    Later a coding agent can wrap Codex, a browser agent can wrap Playwright,
-    and a research agent can use dedicated research tooling without changing
-    the orchestrator contract.
+    Agents stay lightweight until a capability needs its own runtime. Specialist
+    runtimes can be added behind an agent without changing the orchestrator.
     """
 
     def __init__(self, model_router, tool_registry):
@@ -44,9 +43,10 @@ system information instead of inventing results.
                 name="file_intelligence",
                 intents={"file"},
                 instructions="""
-You are the JARVIS File Intelligence Agent. Prefer actual filesystem tools.
-Never claim a file exists, was opened, or was modified unless a tool confirms
-it. Use the user's descriptive context to identify likely files.
+You are the JARVIS File Intelligence Agent. Prefer the file-index and actual
+filesystem tools. Never claim a file exists, was opened, or was modified unless
+a tool confirms it. Use descriptive context and ranked file candidates rather
+than requiring the user to remember exact filenames.
 """,
                 model_router=self.model_router,
                 tool_registry=self.tools,
@@ -59,8 +59,9 @@ it. Use the user's descriptive context to identify likely files.
                 intents={"productivity"},
                 instructions="""
 You are the JARVIS Productivity Agent. Focus on goals, schedules, deadlines,
-learning progress, prioritization, and actionable next steps. Never claim a
-reminder or calendar action was created unless an execution tool confirms it.
+learning progress, prioritization, and actionable next steps. Use stored goals,
+reminders, and the daily brief when useful. Never claim a reminder or goal was
+created or changed unless an execution tool confirms it.
 """,
                 model_router=self.model_router,
                 tool_registry=self.tools,
@@ -68,14 +69,7 @@ reminder or calendar action was created unless an execution tool confirms it.
         )
 
         self.register(
-            ModelAgent(
-                name="research",
-                intents={"research"},
-                instructions="""
-You are the JARVIS Research Agent. Separate evidence from inference, prefer
-primary sources when tools are available, track uncertainty, and do not claim
-fresh internet research unless a browsing or research tool actually ran.
-""",
+            ResearchAgent(
                 model_router=self.model_router,
                 tool_registry=self.tools,
             )
@@ -88,7 +82,8 @@ fresh internet research unless a browsing or research tool actually ran.
                 instructions="""
 You are the JARVIS Coding Agent. Inspect before editing, make the smallest
 coherent change, preserve existing architecture, test when possible, and never
-claim code was changed or tests passed unless tools confirm it.
+claim code was changed or tests passed unless tools confirm it. A dedicated
+coding runtime can replace this generic model runtime later.
 """,
                 model_router=self.model_router,
                 tool_registry=self.tools,
