@@ -1,5 +1,6 @@
 from agents.agent_registry import AgentRegistry
 from agents.agent_router import AgentRouter
+from core.context_builder import ContextBuilder
 from core.event_bus import EventBus
 from core.intent_engine import IntentEngine
 from core.task import TaskStatus
@@ -12,7 +13,7 @@ from tools.tool_registry import ToolRegistry
 
 
 class Orchestrator:
-    """Coordinates intent, agents, models, tools, persistence, and execution."""
+    """Coordinates intent, context, agents, models, tools, and execution."""
 
     def __init__(
         self,
@@ -26,6 +27,7 @@ class Orchestrator:
         runtime=None,
         agent_registry=None,
         agent_router=None,
+        context_builder=None,
     ):
         self.intent_engine = intent_engine or IntentEngine()
         self.model_router = model_router or ModelRouter()
@@ -37,6 +39,7 @@ class Orchestrator:
             event_bus=self.event_bus,
         )
         self.verifier = verifier or BasicVerifier()
+        self.context_builder = context_builder or ContextBuilder()
         self.agent_registry = agent_registry or AgentRegistry(
             model_router=self.model_router,
             tool_registry=self.tools,
@@ -54,7 +57,10 @@ class Orchestrator:
         if task.background:
             self.runtime.submit(
                 task,
-                lambda current_task: self._execute(current_task, context=context),
+                lambda current_task: self._execute(
+                    current_task,
+                    explicit_context=context,
+                ),
             )
             return (
                 f"Started background task {task.task_id[:8]} "
@@ -63,7 +69,7 @@ class Orchestrator:
 
         try:
             self.task_manager.transition(task, TaskStatus.RUNNING)
-            result = self._execute(task, context=context)
+            result = self._execute(task, explicit_context=context)
             self.task_manager.transition(task, TaskStatus.VERIFYING)
 
             verification = self.verifier.verify(task, result)
@@ -78,7 +84,7 @@ class Orchestrator:
             self.task_manager.fail(task, error)
             return f"JARVIS task failed: {error}"
 
-    def _execute(self, task, context=None):
+    def _execute(self, task, explicit_context=None):
         agent = self.agent_router.route(task)
         task.metadata["agent"] = agent.name
         self.task_store.save(task)
@@ -86,6 +92,11 @@ class Orchestrator:
             "agent.selected",
             task_id=task.task_id,
             agent=agent.name,
+        )
+
+        context = self.context_builder.build(
+            task,
+            explicit_context=explicit_context,
         )
         return agent.execute(task, context=context)
 
