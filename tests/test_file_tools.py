@@ -36,6 +36,33 @@ class FileToolsTests(unittest.TestCase):
 
             self.assertIn("File access denied", result)
 
+    def test_denies_env_and_private_key_even_inside_allowed_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env_file = root / ".env"
+            env_file.write_text("API_KEY=super-secret", encoding="utf-8")
+            key_file = root / "private.pem"
+            key_file.write_text("private key material", encoding="utf-8")
+
+            with patch.dict(os.environ, {"JARVIS_ALLOWED_PATHS": str(root)}):
+                env_result = FileTools.read_text_file(str(env_file))
+                key_result = FileTools.read_text_file(str(key_file))
+
+            self.assertIn("protected", env_result)
+            self.assertIn("protected", key_result)
+            self.assertNotIn("super-secret", env_result)
+
+    def test_allows_env_example_for_configuration_help(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            example = root / ".env.example"
+            example.write_text("API_KEY=example", encoding="utf-8")
+
+            with patch.dict(os.environ, {"JARVIS_ALLOWED_PATHS": str(root)}):
+                result = FileTools.read_text_file(str(example))
+
+            self.assertEqual(result, "API_KEY=example")
+
     def test_read_is_truncated_to_requested_limit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
