@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -9,12 +10,16 @@ class TaskStore:
     """SQLite persistence for task state and history."""
 
     def __init__(self, db_path=None):
-        self.db_path = Path(db_path or "data/jarvis.db")
+        project_root = Path(__file__).resolve().parents[1]
+        configured_path = os.getenv("JARVIS_DB_PATH")
+        default_path = project_root / "data" / "jarvis.db"
+
+        self.db_path = Path(db_path or configured_path or default_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        return sqlite3.connect(self.db_path, timeout=10)
 
     def _initialize(self):
         with self._connect() as connection:
