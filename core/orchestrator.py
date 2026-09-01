@@ -1,3 +1,5 @@
+from agents.agent_registry import AgentRegistry
+from agents.agent_router import AgentRouter
 from core.event_bus import EventBus
 from core.intent_engine import IntentEngine
 from core.task import TaskStatus
@@ -10,7 +12,7 @@ from tools.tool_registry import ToolRegistry
 
 
 class Orchestrator:
-    """Coordinates intent, routing, tools, persistence, and task execution."""
+    """Coordinates intent, agents, models, tools, persistence, and execution."""
 
     def __init__(
         self,
@@ -22,6 +24,8 @@ class Orchestrator:
         task_manager=None,
         verifier=None,
         runtime=None,
+        agent_registry=None,
+        agent_router=None,
     ):
         self.intent_engine = intent_engine or IntentEngine()
         self.model_router = model_router or ModelRouter()
@@ -33,6 +37,11 @@ class Orchestrator:
             event_bus=self.event_bus,
         )
         self.verifier = verifier or BasicVerifier()
+        self.agent_registry = agent_registry or AgentRegistry(
+            model_router=self.model_router,
+            tool_registry=self.tools,
+        )
+        self.agent_router = agent_router or AgentRouter(self.agent_registry)
         self.runtime = runtime or BackgroundTaskRuntime(
             task_manager=self.task_manager,
             verifier=self.verifier,
@@ -70,12 +79,15 @@ class Orchestrator:
             return f"JARVIS task failed: {error}"
 
     def _execute(self, task, context=None):
-        return self.model_router.generate(
-            task=task,
-            context=context,
-            tools=self.tools.get_tool_definitions(),
-            executor=self.tools.execute,
+        agent = self.agent_router.route(task)
+        task.metadata["agent"] = agent.name
+        self.task_store.save(task)
+        self.event_bus.publish(
+            "agent.selected",
+            task_id=task.task_id,
+            agent=agent.name,
         )
+        return agent.execute(task, context=context)
 
     def get_task(self, task_reference):
         return self.task_manager.find(task_reference)
