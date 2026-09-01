@@ -3,6 +3,7 @@ from memory.memory_manager import MemoryManager
 from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.file_tools import FileTools
 from tools.system_tools import SystemTools
+from workspace.session_manager import SessionManager
 
 
 class CommandRouter:
@@ -10,6 +11,7 @@ class CommandRouter:
         self.memory = MemoryManager()
         self.brain = Brain(memory_manager=self.memory)
         self.file_intelligence = FileIntelligenceTools()
+        self.sessions = SessionManager()
 
     def route(self, user_input):
         command = user_input.lower().strip()
@@ -31,6 +33,32 @@ class CommandRouter:
 
         if command in ["daily brief", "accountability brief", "today brief"]:
             return self.brain.daily_brief()
+
+        if command in [
+            "continue my project",
+            "continue project",
+            "resume project",
+            "resume workspace",
+            "continue my work",
+            "let's continue",
+            "lets continue",
+        ]:
+            return self.resume_workspace()
+
+        if command in ["workspace", "current workspace", "workspace status"]:
+            return self.workspace_status()
+
+        if command in ["workspaces", "projects", "recent projects", "recent work"]:
+            return self.list_workspaces()
+
+        if command.startswith("resume workspace "):
+            return self.resume_workspace(user_input[17:].strip())
+
+        if command.startswith("resume project "):
+            return self.resume_workspace(user_input[15:].strip())
+
+        if command.startswith("continue project "):
+            return self.resume_workspace(user_input[17:].strip())
 
         if command in ["list files", "files", "show files"]:
             return self.list_files()
@@ -94,6 +122,10 @@ class CommandRouter:
             "  • time\n"
             "  • system info\n"
             "  • daily brief\n"
+            "  • workspace\n"
+            "  • workspaces\n"
+            "  • continue my project\n"
+            "  • resume project <name>\n"
             "  • list files\n"
             "  • index files\n"
             "  • file index status\n"
@@ -124,7 +156,28 @@ class CommandRouter:
         return f"The current time is {SystemTools.get_time()}."
 
     def identity(self):
-        return "I am JARVIS, your personal AI system."
+        return "I am JARVIS, your personal AI operating environment."
+
+    def workspace_status(self):
+        return self.sessions.describe_resume()
+
+    def list_workspaces(self):
+        workspaces = self.sessions.store.list_workspaces(limit=10)
+        if not workspaces:
+            return "No JARVIS workspaces are registered yet."
+
+        lines = []
+        for workspace in workspaces:
+            lines.append(
+                f"- {workspace['name']}\n"
+                f"  {workspace['root_path']}\n"
+                f"  preferred app: {workspace.get('preferred_app') or 'not set'}"
+            )
+        return "Recent workspaces:\n" + "\n".join(lines)
+
+    def resume_workspace(self, reference=None):
+        result = self.sessions.resume_workspace(reference=reference, launch=True)
+        return result["message"]
 
     def list_files(self):
         return FileTools.list_files()
