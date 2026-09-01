@@ -1,15 +1,14 @@
-from datetime import datetime
-from tools.system_tools import SystemTools
-from tools.file_tools import FileTools
-from memory.memory_manager import MemoryManager
 from core.brain import Brain
+from memory.memory_manager import MemoryManager
+from tools.file_tools import FileTools
+from tools.system_tools import SystemTools
+
 
 class CommandRouter:
-    
     def __init__(self):
         self.memory = MemoryManager()
         self.brain = Brain()
-        
+
     def route(self, user_input):
         command = user_input.lower().strip()
 
@@ -24,26 +23,28 @@ class CommandRouter:
 
         if command in ["who are you", "what are you", "your name"]:
             return self.identity()
-        
+
         if command in ["system", "system info", "system information"]:
             return self.system_info()
-        
+
         if command in ["list files", "files", "show files"]:
             return self.list_files()
-        
+
+        if command in ["tasks", "show tasks", "list tasks"]:
+            return self.list_tasks()
+
+        if command.startswith("task "):
+            return self.task_status(user_input[5:].strip())
+
         if command == "memories":
             return self.memory.get_all()
-        
+
         if command.startswith("remember "):
             content = user_input[9:].strip()
 
             if "=" in content:
                 key, value = content.split("=", 1)
-
-                return self.memory.remember(
-                    key.strip(),
-                    value.strip()
-                )
+                return self.memory.remember(key.strip(), value.strip())
 
             return "Use: remember key = value"
 
@@ -65,14 +66,19 @@ class CommandRouter:
             "Currently available commands:\n"
             "  • hello\n"
             "  • time\n"
+            "  • system info\n"
+            "  • list files\n"
+            "  • tasks\n"
+            "  • task <id>\n"
+            "  • remember key = value\n"
+            "  • recall <key>\n"
+            "  • forget <key>\n"
             "  • who are you\n"
-            "  • help\n"
             "  • exit"
         )
-    
+
     def system_info(self):
         info = SystemTools.get_system_info()
-
         return (
             f"System: {info['system']}\n"
             f"Release: {info['release']}\n"
@@ -88,4 +94,33 @@ class CommandRouter:
 
     def list_files(self):
         return FileTools.list_files()
-    
+
+    def list_tasks(self):
+        tasks = self.brain.list_tasks(limit=10)
+        if not tasks:
+            return "No JARVIS tasks have been recorded yet."
+
+        lines = []
+        for task in tasks:
+            lines.append(
+                f"{task.task_id[:8]}  {task.status.value:<16} "
+                f"{task.intent:<12}  {task.raw_input[:60]}"
+            )
+        return "Recent tasks:\n" + "\n".join(lines)
+
+    def task_status(self, task_reference):
+        task = self.brain.get_task(task_reference)
+        if task is None:
+            return f"I could not find a unique task matching '{task_reference}'."
+
+        details = [
+            f"Task: {task.task_id}",
+            f"Intent: {task.intent}",
+            f"Status: {task.status.value}",
+            f"Background: {task.background}",
+        ]
+        if task.result:
+            details.append(f"Result: {task.result}")
+        if task.error:
+            details.append(f"Error: {task.error}")
+        return "\n".join(details)
