@@ -3,6 +3,7 @@ from typing import Callable, Optional
 
 from core.approval_manager import ApprovalManager
 from core.policy_engine import PermissionLevel, PolicyEngine
+from tools.application_tools import ApplicationTools
 from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.file_tools import FileTools
 from tools.productivity_tools import ProductivityTools
@@ -24,16 +25,13 @@ class ToolSpec:
                 "name": self.name,
                 "description": self.description,
                 "parameters": self.parameters
-                or {
-                    "type": "object",
-                    "properties": {},
-                },
+                or {"type": "object", "properties": {}},
             },
         }
 
 
 class ToolRegistry:
-    """Registry of executable actions protected by PolicyEngine."""
+    """Registry of executable JARVIS actions protected by PolicyEngine."""
 
     def __init__(
         self,
@@ -44,12 +42,20 @@ class ToolRegistry:
     ):
         self.policy = policy_engine or PolicyEngine()
         self.productivity = productivity_tools or ProductivityTools()
-        self.file_intelligence = file_intelligence_tools or FileIntelligenceTools()
+        self.file_intelligence = (
+            file_intelligence_tools or FileIntelligenceTools()
+        )
         self.approvals = approval_manager or ApprovalManager()
         self.tools = {}
         self._register_defaults()
 
     def _register_defaults(self):
+        self._register_filesystem_tools()
+        self._register_system_tools()
+        self._register_application_tools()
+        self._register_productivity_tools()
+
+    def _register_filesystem_tools(self):
         self.register(
             ToolSpec(
                 name="list_files",
@@ -58,7 +64,6 @@ class ToolRegistry:
                     "List files and directories inside JARVIS's configured "
                     "read-only filesystem roots."
                 ),
-                permission_level=PermissionLevel.READ,
                 parameters={
                     "type": "object",
                     "properties": {
@@ -76,11 +81,9 @@ class ToolRegistry:
                 name="read_text_file",
                 handler=FileTools.read_text_file,
                 description=(
-                    "Read UTF-8 text from a file inside JARVIS's allowed roots. "
-                    "Use this to inspect source code, notes, markdown, JSON, and "
-                    "other text files before reasoning about their contents."
+                    "Read text from a non-secret file inside JARVIS's allowed "
+                    "roots. Inspect source and notes before reasoning about them."
                 ),
-                permission_level=PermissionLevel.READ,
                 parameters={
                     "type": "object",
                     "properties": {
@@ -101,10 +104,9 @@ class ToolRegistry:
                 name="file_info",
                 handler=FileTools.file_info,
                 description=(
-                    "Inspect metadata for a file or directory inside JARVIS's "
-                    "allowed filesystem roots."
+                    "Inspect metadata for a non-secret file or directory inside "
+                    "JARVIS's allowed filesystem roots."
                 ),
-                permission_level=PermissionLevel.READ,
                 parameters={
                     "type": "object",
                     "properties": {"path": {"type": "string"}},
@@ -114,43 +116,11 @@ class ToolRegistry:
         )
         self.register(
             ToolSpec(
-                name="system_info",
-                handler=SystemTools.get_system_info,
-                description=(
-                    "Get information about the computer operating "
-                    "system and hardware."
-                ),
-                permission_level=PermissionLevel.READ,
-            )
-        )
-        self.register(
-            ToolSpec(
-                name="current_time",
-                handler=SystemTools.get_time,
-                description="Get the current local clock time.",
-                permission_level=PermissionLevel.READ,
-            )
-        )
-        self.register(
-            ToolSpec(
-                name="current_datetime",
-                handler=SystemTools.get_datetime,
-                description=(
-                    "Get the current local date, time, and timezone as "
-                    "an ISO-8601 timestamp. Use this before converting "
-                    "relative reminder times such as 'tomorrow evening'."
-                ),
-                permission_level=PermissionLevel.READ,
-            )
-        )
-        self.register(
-            ToolSpec(
                 name="index_files",
                 handler=self.file_intelligence.index_files,
                 description=(
-                    "Refresh JARVIS's local searchable file index for the "
-                    "configured index roots. Use this before descriptive file "
-                    "search when the index may be stale."
+                    "Refresh JARVIS's local searchable file index for configured "
+                    "roots. Use before descriptive search when the index is stale."
                 ),
                 permission_level=PermissionLevel.SAFE,
             )
@@ -160,17 +130,15 @@ class ToolRegistry:
                 name="search_files",
                 handler=self.file_intelligence.search_files,
                 description=(
-                    "Search indexed local files by filename, path, or extracted "
-                    "text using descriptive words instead of requiring an exact "
-                    "filename."
+                    "Search indexed local files by filename, path, extracted text, "
+                    "and semantic similarity when local embeddings are enabled."
                 ),
-                permission_level=PermissionLevel.READ,
                 parameters={
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Words describing the file to find.",
+                            "description": "Words or concepts describing the file.",
                         },
                         "limit": {
                             "type": "integer",
@@ -188,25 +156,85 @@ class ToolRegistry:
                 name="file_index_status",
                 handler=self.file_intelligence.file_index_status,
                 description=(
-                    "Show how many files JARVIS has indexed and which roots "
-                    "are currently configured."
+                    "Show file-index size, configured roots, FTS status, and "
+                    "semantic-index status."
                 ),
-                permission_level=PermissionLevel.READ,
+            )
+        )
+
+    def _register_system_tools(self):
+        self.register(
+            ToolSpec(
+                name="system_info",
+                handler=SystemTools.get_system_info,
+                description="Get computer operating-system and hardware information.",
             )
         )
         self.register(
             ToolSpec(
-                name="create_goal",
-                handler=self.productivity.create_goal,
-                description="Create a personal goal for the user.",
+                name="current_time",
+                handler=SystemTools.get_time,
+                description="Get the current local clock time.",
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="current_datetime",
+                handler=SystemTools.get_datetime,
+                description=(
+                    "Get current local date, time, and timezone as ISO-8601. "
+                    "Use before resolving relative reminder times."
+                ),
+            )
+        )
+
+    def _register_application_tools(self):
+        self.register(
+            ToolSpec(
+                name="list_applications",
+                handler=ApplicationTools.list_applications,
+                description=(
+                    "List the fixed desktop application aliases JARVIS is allowed "
+                    "to launch and whether they are available."
+                ),
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="open_application",
+                handler=ApplicationTools.open_application,
+                description=(
+                    "Open an application by its fixed allowlisted alias. This tool "
+                    "cannot execute arbitrary commands."
+                ),
                 permission_level=PermissionLevel.SAFE,
                 parameters={
                     "type": "object",
                     "properties": {
-                        "title": {
+                        "name": {
                             "type": "string",
-                            "description": "Clear goal title.",
-                        },
+                            "description": (
+                                "Allowlisted application alias such as vscode, "
+                                "chrome, edge, terminal, notepad, or calculator."
+                            ),
+                        }
+                    },
+                    "required": ["name"],
+                },
+            )
+        )
+
+    def _register_productivity_tools(self):
+        self.register(
+            ToolSpec(
+                name="create_goal",
+                handler=self.productivity.create_goal,
+                description="Create a persistent personal goal.",
+                permission_level=PermissionLevel.SAFE,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
                         "target_date": {
                             "type": "string",
                             "description": "Optional ISO-8601 target date or datetime.",
@@ -220,18 +248,14 @@ class ToolRegistry:
             ToolSpec(
                 name="list_goals",
                 handler=self.productivity.list_goals,
-                description="List the user's active personal goals.",
-                permission_level=PermissionLevel.READ,
+                description="List active personal goals.",
             )
         )
         self.register(
             ToolSpec(
                 name="update_goal",
                 handler=self.productivity.update_goal,
-                description=(
-                    "Update a stored goal's progress percentage or status. Use "
-                    "this when the user reports progress or completes a goal."
-                ),
+                description="Update a goal's progress percentage or status.",
                 permission_level=PermissionLevel.SAFE,
                 parameters={
                     "type": "object",
@@ -253,22 +277,15 @@ class ToolRegistry:
                 name="create_reminder",
                 handler=self.productivity.create_reminder,
                 description=(
-                    "Create a persistent reminder. due_at must be a "
-                    "timezone-aware ISO-8601 timestamp. For relative times, "
-                    "call current_datetime first and resolve the date/time."
+                    "Create a persistent reminder. due_at must be a timezone-aware "
+                    "ISO-8601 timestamp; call current_datetime for relative times."
                 ),
                 permission_level=PermissionLevel.SAFE,
                 parameters={
                     "type": "object",
                     "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "What the user should be reminded about.",
-                        },
-                        "due_at": {
-                            "type": "string",
-                            "description": "Timezone-aware ISO-8601 reminder datetime.",
-                        },
+                        "text": {"type": "string"},
+                        "due_at": {"type": "string"},
                     },
                     "required": ["text", "due_at"],
                 },
@@ -279,14 +296,13 @@ class ToolRegistry:
                 name="list_reminders",
                 handler=self.productivity.list_reminders,
                 description="List pending reminders ordered by due time.",
-                permission_level=PermissionLevel.READ,
             )
         )
         self.register(
             ToolSpec(
                 name="complete_reminder",
                 handler=self.productivity.complete_reminder,
-                description="Mark a stored reminder as completed.",
+                description="Mark a persistent reminder as completed.",
                 permission_level=PermissionLevel.SAFE,
                 parameters={
                     "type": "object",
@@ -302,10 +318,9 @@ class ToolRegistry:
                 name="daily_brief",
                 handler=self.productivity.daily_brief,
                 description=(
-                    "Generate an evidence-based accountability brief from active "
-                    "goals, reminders, and recent JARVIS task history."
+                    "Generate an evidence-based accountability brief from goals, "
+                    "reminders, and recent JARVIS task history."
                 ),
-                permission_level=PermissionLevel.READ,
             )
         )
 
@@ -314,7 +329,6 @@ class ToolRegistry:
 
     def execute(self, tool_name, arguments=None, approved=False, task_id=None):
         spec = self.tools.get(tool_name)
-
         if spec is None:
             return f"Unknown tool: {tool_name}"
 
@@ -362,7 +376,10 @@ class ToolRegistry:
 
         if not approved:
             self.approvals.resolve(request["approval_id"], "denied")
-            return f"Denied approval {request['approval_id'][:8]} for {request['action']}."
+            return (
+                f"Denied approval {request['approval_id'][:8]} "
+                f"for {request['action']}."
+            )
 
         result = self.execute(
             request["action"],
@@ -370,8 +387,16 @@ class ToolRegistry:
             approved=True,
             task_id=request.get("task_id"),
         )
-        status = "failed" if str(result).startswith(("Tool execution failed", "Invalid tool")) else "executed"
-        self.approvals.resolve(request["approval_id"], status, result=result)
+        status = (
+            "failed"
+            if str(result).startswith(("Tool execution failed", "Invalid tool"))
+            else "executed"
+        )
+        self.approvals.resolve(
+            request["approval_id"],
+            status,
+            result=result,
+        )
         return result
 
     def get_tool_definitions(self):
