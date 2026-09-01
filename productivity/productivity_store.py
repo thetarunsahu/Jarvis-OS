@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -28,10 +29,18 @@ class ProductivityStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.db_path, timeout=10)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _initialize(self):
         with self._connect() as connection:
