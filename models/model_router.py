@@ -32,8 +32,10 @@ class ModelRouter:
                 ),
             )
 
-        # If a task may need tools, prefer providers that can actually call them.
-        if tools:
+        # Tool support only changes provider priority when the task actually
+        # requires tool execution. Normal conversation still respects the
+        # configured provider preference.
+        if task.requires_tools and tools:
             ordered = sorted(
                 ordered,
                 key=lambda name: not self.registry.get(name).supports_tools,
