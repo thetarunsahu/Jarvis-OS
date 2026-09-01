@@ -175,6 +175,30 @@ class ToolRegistry:
         )
         self.register(
             ToolSpec(
+                name="update_goal",
+                handler=self.productivity.update_goal,
+                description=(
+                    "Update a stored goal's progress percentage or status. Use "
+                    "this when the user reports progress or completes a goal."
+                ),
+                permission_level=PermissionLevel.SAFE,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "goal_id": {"type": "string"},
+                        "progress": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                        },
+                        "status": {"type": "string"},
+                    },
+                    "required": ["goal_id"],
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
                 name="create_reminder",
                 handler=self.productivity.create_reminder,
                 description=(
@@ -204,6 +228,32 @@ class ToolRegistry:
                 name="list_reminders",
                 handler=self.productivity.list_reminders,
                 description="List pending reminders ordered by due time.",
+                permission_level=PermissionLevel.READ,
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="complete_reminder",
+                handler=self.productivity.complete_reminder,
+                description="Mark a stored reminder as completed.",
+                permission_level=PermissionLevel.SAFE,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "reminder_id": {"type": "string"},
+                    },
+                    "required": ["reminder_id"],
+                },
+            )
+        )
+        self.register(
+            ToolSpec(
+                name="daily_brief",
+                handler=self.productivity.daily_brief,
+                description=(
+                    "Generate an evidence-based accountability brief from active "
+                    "goals, reminders, and recent JARVIS task history."
+                ),
                 permission_level=PermissionLevel.READ,
             )
         )
