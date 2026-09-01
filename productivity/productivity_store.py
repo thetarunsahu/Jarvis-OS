@@ -9,6 +9,14 @@ def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_datetime(value):
+    text = str(value).strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("Datetime must include a timezone offset.")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 class ProductivityStore:
     """SQLite storage for personal goals and reminders."""
 
@@ -45,9 +53,27 @@ class ProductivityStore:
                     due_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    notified_at TEXT,
                     completed_at TEXT
                 );
                 """
+            )
+            self._ensure_column(
+                connection,
+                table="reminders",
+                column="notified_at",
+                definition="TEXT",
+            )
+
+    @staticmethod
+    def _ensure_column(connection, table, column, definition):
+        columns = {
+            row[1]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
 
     def create_goal(self, title, target_date=None):
@@ -110,6 +136,7 @@ class ProductivityStore:
 
     def create_reminder(self, text, due_at):
         reminder_id = str(uuid4())
+        normalized_due_at = normalize_datetime(due_at)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -117,7 +144,12 @@ class ProductivityStore:
                     reminder_id, text, due_at, status, created_at
                 ) VALUES (?, ?, ?, 'pending', ?)
                 """,
-                (reminder_id, text.strip(), due_at, utc_now_iso()),
+                (
+                    reminder_id,
+                    text.strip(),
+                    normalized_due_at,
+                    utc_now_iso(),
+                ),
             )
         return self.get_reminder(reminder_id)
 
@@ -143,7 +175,11 @@ class ProductivityStore:
         return [dict(row) for row in rows]
 
     def due_reminders(self, now_iso=None):
-        now_iso = now_iso or utc_now_iso()
+        normalized_now = (
+            normalize_datetime(now_iso)
+            if now_iso is not None
+            else utc_now_iso()
+        )
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -151,9 +187,25 @@ class ProductivityStore:
                 WHERE status = 'pending' AND due_at <= ?
                 ORDER BY due_at ASC
                 """,
-                (now_iso,),
+                (normalized_now,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def mark_reminder_notified(self, reminder_id):
+        reminder = self.get_reminder(reminder_id)
+        if reminder is None:
+            return None
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE reminders
+                SET status = 'notified', notified_at = ?
+                WHERE reminder_id = ?
+                """,
+                (utc_now_iso(), reminder_id),
+            )
+        return self.get_reminder(reminder_id)
 
     def complete_reminder(self, reminder_id):
         reminder = self.get_reminder(reminder_id)
