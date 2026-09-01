@@ -69,10 +69,18 @@ class JarvisApp(JarvisHUD):
         self.task_panel.info.setWordWrap(True)
         self.task_panel.setMaximumHeight(120)
 
+        self.approval_panel = InfoPanel(
+            "APPROVALS",
+            ["No pending approvals."],
+        )
+        self.approval_panel.info.setWordWrap(True)
+        self.approval_panel.setMaximumHeight(105)
+
         root = self.layout()
         insert_at = max(0, root.count() - 2)
         root.insertWidget(insert_at, self.response_panel)
         root.insertWidget(insert_at + 1, self.task_panel)
+        root.insertWidget(insert_at + 2, self.approval_panel)
 
         self.input.returnPressed.connect(self.execute_command)
 
@@ -87,9 +95,9 @@ class JarvisApp(JarvisHUD):
         self.event_bridge.task_failed.connect(self._background_task_failed)
 
         self.task_timer = QTimer(self)
-        self.task_timer.timeout.connect(self.refresh_tasks)
+        self.task_timer.timeout.connect(self.refresh_runtime_panels)
         self.task_timer.start(1200)
-        self.refresh_tasks()
+        self.refresh_runtime_panels()
 
         scheduler = self.jarvis.router.brain.orchestrator.reminder_scheduler
         if scheduler is not None:
@@ -130,13 +138,13 @@ class JarvisApp(JarvisHUD):
     def _command_finished(self, response):
         self.response_panel.set_lines([response])
         self.status.setText("SYSTEM READY")
-        self.refresh_tasks()
+        self.refresh_runtime_panels()
 
     @Slot(str)
     def _command_failed(self, error):
         self.response_panel.set_lines([f"Command failed: {error}"])
         self.status.setText("ERROR")
-        self.refresh_tasks()
+        self.refresh_runtime_panels()
 
     @Slot()
     def _clear_command_worker(self):
@@ -161,7 +169,7 @@ class JarvisApp(JarvisHUD):
         self.response_panel.set_lines([message])
         self.status.setText("TASK COMPLETE")
         QApplication.beep()
-        self.refresh_tasks()
+        self.refresh_runtime_panels()
 
     @Slot(str)
     def _background_task_failed(self, task_id):
@@ -177,7 +185,11 @@ class JarvisApp(JarvisHUD):
         )
         self.status.setText("TASK FAILED")
         QApplication.beep()
+        self.refresh_runtime_panels()
+
+    def refresh_runtime_panels(self):
         self.refresh_tasks()
+        self.refresh_approvals()
 
     def refresh_tasks(self):
         try:
@@ -208,6 +220,23 @@ class JarvisApp(JarvisHUD):
                 lines = ["No tasks recorded yet."]
 
         self.task_panel.set_lines(lines)
+
+    def refresh_approvals(self):
+        try:
+            approvals = self.jarvis.router.brain.list_approvals(limit=4)
+        except Exception:
+            return
+
+        if approvals:
+            lines = [
+                f"! {request['approval_id'][:8]}  {request['action']}  "
+                f"→ approve {request['approval_id'][:8]} / deny {request['approval_id'][:8]}"
+                for request in approvals
+            ]
+        else:
+            lines = ["No pending approvals."]
+
+        self.approval_panel.set_lines(lines)
 
     def closeEvent(self, event):
         try:
