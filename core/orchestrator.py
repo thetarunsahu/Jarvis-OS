@@ -137,6 +137,9 @@ class Orchestrator:
         )
         return result
 
+    def daily_brief(self):
+        return self.tools.productivity.daily_brief()
+
     def shutdown(self):
         if self.reminder_scheduler is not None:
             self.reminder_scheduler.stop(wait=False)
