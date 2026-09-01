@@ -7,6 +7,29 @@ class FileTools:
 
     MAX_READ_CHARS = 100_000
 
+    SENSITIVE_DIRECTORIES = {
+        ".git",
+        ".ssh",
+        ".aws",
+        ".azure",
+        ".gnupg",
+    }
+    SENSITIVE_FILENAMES = {
+        ".env",
+        ".npmrc",
+        ".pypirc",
+        "credentials.json",
+        "secrets.json",
+        "id_rsa",
+        "id_ed25519",
+    }
+    SENSITIVE_SUFFIXES = {
+        ".pem",
+        ".key",
+        ".p12",
+        ".pfx",
+    }
+
     @classmethod
     def project_root(cls):
         return Path(__file__).resolve().parents[1]
@@ -17,11 +40,15 @@ class FileTools:
         if configured:
             candidates = [item for item in configured.split(os.pathsep) if item]
         else:
-            # File-index roots are already user-selected and are reasonable
-            # read-only roots when a separate allowlist is not configured.
             indexed = os.getenv("JARVIS_INDEX_PATHS", "").strip()
-            candidates = [item for item in indexed.split(os.pathsep) if item] if indexed else []
+            candidates = (
+                [item for item in indexed.split(os.pathsep) if item]
+                if indexed
+                else []
+            )
 
+        # JARVIS needs read access to its own source during development, but
+        # sensitive files inside the project are denied separately below.
         candidates.append(str(cls.project_root()))
 
         roots = []
@@ -35,20 +62,46 @@ class FileTools:
         return roots
 
     @classmethod
-    def _resolve_allowed(cls, value="."):
+    def _is_sensitive(cls, path):
+        lowered_parts = {part.lower() for part in path.parts}
+        if lowered_parts.intersection(cls.SENSITIVE_DIRECTORIES):
+            return True
+
+        name = path.name.lower()
+        if name == ".env.example":
+            return False
+        if name in cls.SENSITIVE_FILENAMES:
+            return True
+        if name.startswith(".env."):
+            return True
+        if path.suffix.lower() in cls.SENSITIVE_SUFFIXES:
+            return True
+
+        return False
+
+    @classmethod
+    def _resolve_allowed(cls, value=".", allow_sensitive=False):
         raw = Path(value).expanduser()
         if raw.is_absolute():
             path = raw.resolve()
         else:
             path = (cls.project_root() / raw).resolve()
 
-        for root in cls.allowed_roots():
-            if path == root or root in path.parents:
-                return path
-
-        raise PermissionError(
-            f"Path is outside JARVIS allowed roots: {path}"
+        allowed = any(
+            path == root or root in path.parents
+            for root in cls.allowed_roots()
         )
+        if not allowed:
+            raise PermissionError(
+                f"Path is outside JARVIS allowed roots: {path}"
+            )
+
+        if not allow_sensitive and cls._is_sensitive(path):
+            raise PermissionError(
+                "Path is protected because it may contain credentials or secrets."
+            )
+
+        return path
 
     @classmethod
     def list_files(cls, directory="."):
@@ -65,7 +118,7 @@ class FileTools:
         items = []
         try:
             for item in path.iterdir():
-                if item.name.startswith("."):
+                if item.name.startswith(".") or cls._is_sensitive(item):
                     continue
 
                 if item.is_dir():
