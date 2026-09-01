@@ -1,8 +1,24 @@
+import os
 import subprocess
 from pathlib import Path
 
 from tools.application_tools import ApplicationTools
 from workspace.workspace_store import WorkspaceStore
+
+
+IGNORED_CONTEXT_DIRS = {
+    ".git",
+    ".idea",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".next",
+}
 
 
 class SessionManager:
@@ -28,12 +44,23 @@ class SessionManager:
             return None
 
         root = Path(workspace["root_path"])
-        captured = {
-            "root_path": str(root),
-            "exists": root.exists(),
-            "git_branch": self._git_value(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
-            "git_status": self._git_value(root, ["status", "--short"]),
-        }
+        previous = self.store.latest_session(workspace["workspace_id"]) or {}
+        previous_state = dict(previous.get("state") or {})
+
+        # Preserve useful continuity fields from the previous snapshot, then
+        # refresh deterministic project facts. This prevents a shutdown or
+        # resume snapshot from accidentally erasing next_action/open_files.
+        captured = previous_state
+        captured.update(
+            {
+                "root_path": str(root),
+                "exists": root.exists(),
+                "git_branch": self._git_value(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
+                "git_status": self._git_value(root, ["status", "--short"]),
+                "project_kind": self._project_kind(root),
+                "recent_files": self._recent_files(root),
+            }
+        )
         if state:
             captured.update(state)
 
@@ -56,13 +83,7 @@ class SessionManager:
         }
 
     def resume_workspace(self, reference=None, launch=True):
-        """Restore the latest workspace context and optionally launch its IDE.
-
-        This intentionally restores only deterministic, safe state today: the
-        project root, preferred application and recorded session metadata. Open
-        editor tabs, browser tabs and terminals remain future adapters instead
-        of being faked as already restored.
-        """
+        """Restore deterministic project context and optionally launch its IDE."""
         plan = self.resume_plan(reference)
         if plan is None:
             return {
@@ -120,12 +141,19 @@ class SessionManager:
             f"Root: {workspace['root_path']}",
             f"Preferred app: {workspace.get('preferred_app') or 'not set'}",
         ]
+        if state.get("project_kind"):
+            lines.append(f"Project: {state['project_kind']}")
         if state.get("git_branch"):
             lines.append(f"Git branch: {state['git_branch']}")
         git_status = state.get("git_status")
         if git_status:
             changed = len([line for line in git_status.splitlines() if line.strip()])
             lines.append(f"Working tree changes: {changed}")
+        if state.get("next_action"):
+            lines.append(f"Next action: {state['next_action']}")
+        recent_files = state.get("recent_files") or []
+        if recent_files:
+            lines.append("Recent files: " + ", ".join(recent_files[:5]))
         if session.get("summary"):
             lines.append(f"Last session: {session['summary']}")
         return "\n".join(lines)
@@ -135,6 +163,62 @@ class SessionManager:
         if workspace is None:
             return None
         return self.store.touch_workspace(workspace["workspace_id"])
+
+    @staticmethod
+    def _project_kind(root):
+        if not root.exists() or not root.is_dir():
+            return None
+
+        signals = [
+            ("pyproject.toml", "Python"),
+            ("requirements.txt", "Python"),
+            ("package.json", "Node / JavaScript"),
+            ("Cargo.toml", "Rust"),
+            ("go.mod", "Go"),
+        ]
+        for filename, kind in signals:
+            if (root / filename).exists():
+                return kind
+
+        if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
+            return ".NET"
+        return "General project"
+
+    @staticmethod
+    def _recent_files(root, limit=6, scan_limit=5000):
+        if not root.exists() or not root.is_dir():
+            return []
+
+        candidates = []
+        scanned = 0
+        try:
+            for current, dirs, files in os.walk(root):
+                dirs[:] = [name for name in dirs if name not in IGNORED_CONTEXT_DIRS]
+                for filename in files:
+                    scanned += 1
+                    if scanned > scan_limit:
+                        break
+                    path = Path(current) / filename
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    if stat.st_size > 5 * 1024 * 1024:
+                        continue
+                    candidates.append((stat.st_mtime, path))
+                if scanned > scan_limit:
+                    break
+        except OSError:
+            return []
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        result = []
+        for _, path in candidates[: max(1, int(limit))]:
+            try:
+                result.append(str(path.relative_to(root)))
+            except ValueError:
+                result.append(str(path))
+        return result
 
     @staticmethod
     def _launch_workspace(workspace):
