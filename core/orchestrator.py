@@ -124,6 +124,19 @@ class Orchestrator:
     def list_tasks(self, limit=20, status=None):
         return self.task_manager.list(limit=limit, status=status)
 
+    def list_approvals(self, limit=20):
+        return self.tools.list_pending_approvals(limit=limit)
+
+    def resolve_approval(self, reference, approved):
+        result = self.tools.resolve_approval(reference, approved=approved)
+        self.event_bus.publish(
+            "approval.resolved",
+            reference=reference,
+            approved=bool(approved),
+            result=str(result),
+        )
+        return result
+
     def shutdown(self):
         if self.reminder_scheduler is not None:
             self.reminder_scheduler.stop(wait=False)
