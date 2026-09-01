@@ -31,5 +31,8 @@ class Brain:
     def resolve_approval(self, reference, approved):
         return self.orchestrator.resolve_approval(reference, approved=approved)
 
+    def daily_brief(self):
+        return self.orchestrator.daily_brief()
+
     def shutdown(self):
         self.orchestrator.shutdown()
