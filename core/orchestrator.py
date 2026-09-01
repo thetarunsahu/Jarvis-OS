@@ -65,8 +65,8 @@ class Orchestrator:
             executor=self.tools.execute,
         )
 
-    def get_task(self, task_id):
-        return self.task_manager.get(task_id)
+    def get_task(self, task_reference):
+        return self.task_manager.find(task_reference)
 
     def list_tasks(self, limit=20, status=None):
         return self.task_manager.list(limit=limit, status=status)
