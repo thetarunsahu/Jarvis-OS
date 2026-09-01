@@ -29,6 +29,12 @@ class BackgroundTaskRuntime:
         try:
             self.task_manager.transition(task, TaskStatus.RUNNING)
             result = handler(task)
+
+            # The handler can deliberately pause a task at the permission
+            # boundary. The approval command will resume/finish it later.
+            if task.status == TaskStatus.WAITING_APPROVAL:
+                return result
+
             self.task_manager.transition(task, TaskStatus.VERIFYING)
 
             verification = self.verifier.verify(task, result)
