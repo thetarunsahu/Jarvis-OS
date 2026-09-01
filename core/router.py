@@ -7,7 +7,7 @@ from tools.system_tools import SystemTools
 class CommandRouter:
     def __init__(self):
         self.memory = MemoryManager()
-        self.brain = Brain()
+        self.brain = Brain(memory_manager=self.memory)
 
     def route(self, user_input):
         command = user_input.lower().strip()
@@ -119,6 +119,8 @@ class CommandRouter:
             f"Status: {task.status.value}",
             f"Background: {task.background}",
         ]
+        if task.metadata.get("agent"):
+            details.append(f"Agent: {task.metadata['agent']}")
         if task.result:
             details.append(f"Result: {task.result}")
         if task.error:
