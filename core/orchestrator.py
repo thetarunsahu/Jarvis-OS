@@ -5,6 +5,7 @@ from core.event_bus import EventBus
 from core.intent_engine import IntentEngine
 from core.task import TaskStatus
 from models.model_router import ModelRouter
+from observability.audit_log import AuditLogger
 from tasks.background_runtime import BackgroundTaskRuntime
 from tasks.task_manager import TaskManager
 from tasks.task_store import TaskStore
@@ -28,11 +29,13 @@ class Orchestrator:
         agent_registry=None,
         agent_router=None,
         context_builder=None,
+        audit_logger=None,
     ):
         self.intent_engine = intent_engine or IntentEngine()
         self.model_router = model_router or ModelRouter()
         self.tools = tool_registry or ToolRegistry()
         self.event_bus = event_bus or EventBus()
+        self.audit_logger = audit_logger or AuditLogger(self.event_bus)
         self.task_store = task_store or TaskStore()
         self.task_manager = task_manager or TaskManager(
             store=self.task_store,
