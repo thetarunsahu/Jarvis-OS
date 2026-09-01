@@ -14,6 +14,7 @@ class TaskManager:
         TaskStatus.CREATED: {
             TaskStatus.QUEUED,
             TaskStatus.RUNNING,
+            TaskStatus.FAILED,
             TaskStatus.CANCELLED,
         },
         TaskStatus.QUEUED: {
@@ -93,10 +94,11 @@ class TaskManager:
                 f"Task {task.task_id} must be verifying before completion."
             )
 
-        task.complete(result)
-        self.store.save(task)
+        task.result = None if result is None else str(result)
+        task.error = None
+        self.transition(task, TaskStatus.COMPLETED)
         self.event_bus.publish(
-            "task.completed",
+            "task.result_ready",
             task_id=task.task_id,
             result=task.result,
         )
@@ -110,10 +112,10 @@ class TaskManager:
         }:
             return task
 
-        task.fail(error)
-        self.store.save(task)
+        task.error = str(error)
+        self.transition(task, TaskStatus.FAILED)
         self.event_bus.publish(
-            "task.failed",
+            "task.error_recorded",
             task_id=task.task_id,
             error=task.error,
         )
