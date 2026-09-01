@@ -8,6 +8,28 @@ class IntentEngine:
     intent analysis can be layered on later without changing the Task contract.
     """
 
+    APPLICATION_ALIASES = {
+        "vscode",
+        "vs code",
+        "visual studio code",
+        "chrome",
+        "edge",
+        "terminal",
+        "powershell",
+        "notepad",
+        "calculator",
+        "explorer",
+    }
+
+    @classmethod
+    def _is_application_request(cls, text):
+        verbs = ("open", "launch", "start")
+        return any(
+            f"{verb} {alias}" in text
+            for verb in verbs
+            for alias in cls.APPLICATION_ALIASES
+        )
+
     def analyze(self, user_input):
         text = user_input.lower().strip()
 
@@ -23,6 +45,11 @@ class IntentEngine:
 
         if any(word in text for word in ["system info", "cpu", "ram", "processor", "battery"]):
             intent = "system"
+            requires_tools = True
+            complexity = 1
+
+        if self._is_application_request(text):
+            intent = "application"
             requires_tools = True
             complexity = 1
 
