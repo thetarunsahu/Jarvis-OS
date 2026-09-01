@@ -88,6 +88,10 @@ class Orchestrator:
         try:
             self.task_manager.transition(task, TaskStatus.RUNNING)
             result = self._execute(task, explicit_context=context)
+
+            if task.status == TaskStatus.WAITING_APPROVAL:
+                return result
+
             self.task_manager.transition(task, TaskStatus.VERIFYING)
 
             verification = self.verifier.verify(task, result)
@@ -116,7 +120,22 @@ class Orchestrator:
             task,
             explicit_context=explicit_context,
         )
-        return agent.execute(task, context=context)
+        result = agent.execute(task, context=context)
+
+        pending = self.tools.approvals.list_for_task(
+            task.task_id,
+            status="pending",
+            limit=20,
+        )
+        if pending and task.status == TaskStatus.RUNNING:
+            self.task_manager.transition(task, TaskStatus.WAITING_APPROVAL)
+            self.event_bus.publish(
+                "approval.requested",
+                task_id=task.task_id,
+                approval_ids=[item["approval_id"] for item in pending],
+            )
+
+        return result
 
     def get_task(self, task_reference):
         return self.task_manager.find(task_reference)
@@ -128,13 +147,66 @@ class Orchestrator:
         return self.tools.list_pending_approvals(limit=limit)
 
     def resolve_approval(self, reference, approved):
+        request = self.tools.approvals.find(reference)
+        task = None
+        if request and request.get("task_id"):
+            task = self.task_manager.find(request["task_id"])
+
         result = self.tools.resolve_approval(reference, approved=approved)
+        resolved = self.tools.approvals.find(reference)
+
         self.event_bus.publish(
             "approval.resolved",
             reference=reference,
             approved=bool(approved),
             result=str(result),
+            task_id=request.get("task_id") if request else None,
         )
+
+        if task is None or request is None:
+            return result
+
+        if not approved:
+            if task.status == TaskStatus.WAITING_APPROVAL:
+                self.task_manager.transition(task, TaskStatus.CANCELLED)
+            return (
+                f"{result}\nTask {task.task_id[:8]} cancelled because "
+                "the required action was denied."
+            )
+
+        if resolved and resolved.get("status") == "failed":
+            self.task_manager.fail(task, result)
+            return result
+
+        remaining = self.tools.approvals.list_for_task(
+            task.task_id,
+            status="pending",
+            limit=20,
+        )
+        if remaining:
+            return (
+                f"{result}\n{len(remaining)} approval request(s) still pending "
+                f"for task {task.task_id[:8]}."
+            )
+
+        if task.status == TaskStatus.WAITING_APPROVAL:
+            try:
+                self.task_manager.transition(task, TaskStatus.RUNNING)
+                self.task_manager.transition(task, TaskStatus.VERIFYING)
+                verification = self.verifier.verify(task, result)
+                if not verification.passed:
+                    raise RuntimeError(
+                        f"Verification failed: {verification.reason}"
+                    )
+                self.task_manager.complete(task, result=result)
+            except Exception as error:
+                self.task_manager.fail(task, error)
+                return f"Approved action ran, but task finalization failed: {error}"
+
+            return (
+                f"{result}\nTask {task.task_id[:8]} completed after approval."
+            )
+
         return result
 
     def daily_brief(self):
