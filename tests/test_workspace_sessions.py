@@ -42,6 +42,35 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(plan["session"]["state"]["open_files"], ["README.md"])
         self.assertEqual(plan["session"]["state"]["next_action"], "Run tests")
 
+    def test_capture_detects_project_kind_and_recent_files(self):
+        (self.project / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+        (self.project / "main.py").write_text("print('jarvis')\n", encoding="utf-8")
+        workspace = self.manager.register_workspace("Demo Project", self.project)
+
+        session = self.manager.capture_session(workspace["workspace_id"])
+
+        self.assertEqual(session["state"]["project_kind"], "Python")
+        self.assertIn("main.py", session["state"]["recent_files"])
+
+    def test_followup_snapshot_preserves_continuity_fields(self):
+        workspace = self.manager.register_workspace("Demo Project", self.project)
+        self.manager.capture_session(
+            workspace["workspace_id"],
+            state={
+                "open_files": ["README.md", "core.py"],
+                "next_action": "Finish context engine",
+            },
+            summary="Focused work session.",
+        )
+
+        latest = self.manager.capture_session(
+            workspace["workspace_id"],
+            summary="Automatic close snapshot.",
+        )
+
+        self.assertEqual(latest["state"]["open_files"], ["README.md", "core.py"])
+        self.assertEqual(latest["state"]["next_action"], "Finish context engine")
+
     def test_resume_workspace_without_launch_updates_session(self):
         workspace = self.manager.register_workspace("Demo Project", self.project)
         self.manager.capture_session(
@@ -57,6 +86,7 @@ class WorkspaceSessionTests(unittest.TestCase):
         latest = self.store.latest_session(workspace["workspace_id"])
         self.assertEqual(latest["summary"], "Workspace resumed through JARVIS.")
         self.assertEqual(latest["state"]["resume_action"], "planned")
+        self.assertEqual(latest["state"]["next_action"], "Continue implementation")
 
     @patch("workspace.session_manager.subprocess.Popen")
     @patch("workspace.session_manager.ApplicationTools.resolve")
