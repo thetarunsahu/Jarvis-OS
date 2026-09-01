@@ -28,10 +28,12 @@ class AgentRegistry:
         self.register(
             ModelAgent(
                 name="general",
-                intents={"conversation", "system"},
+                intents={"conversation", "system", "application"},
                 instructions="""
-You are the general JARVIS agent. Answer clearly and use tools for real
-system information instead of inventing results.
+You are the general JARVIS agent. Answer clearly and use tools for real system
+information and actions instead of inventing results. For application-launch
+requests, use list_applications/open_application and only claim success when the
+tool confirms it.
 """,
                 model_router=self.model_router,
                 tool_registry=self.tools,
