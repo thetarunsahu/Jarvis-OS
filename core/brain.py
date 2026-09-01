@@ -25,5 +25,11 @@ class Brain:
     def list_tasks(self, limit=20, status=None):
         return self.orchestrator.list_tasks(limit=limit, status=status)
 
+    def list_approvals(self, limit=20):
+        return self.orchestrator.list_approvals(limit=limit)
+
+    def resolve_approval(self, reference, approved):
+        return self.orchestrator.resolve_approval(reference, approved=approved)
+
     def shutdown(self):
         self.orchestrator.shutdown()
