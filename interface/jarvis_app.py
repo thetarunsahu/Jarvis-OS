@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication
@@ -6,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from core.jarvis import Jarvis
 from interface.dashboard import JarvisHUD
 from interface.home import JarvisHome
+from workspace.session_manager import SessionManager
 
 
 class CommandWorker(QObject):
@@ -44,16 +46,12 @@ class JarvisEventBridge(QObject):
 
 
 class JarvisApp(JarvisHome):
-    """Primary AI-first JARVIS desktop experience.
-
-    The old telemetry-heavy HUD remains available as a Diagnostics view, while
-    Home is now centered around conversation, current work, agent activity,
-    tasks and approvals.
-    """
+    """Primary AI-first JARVIS desktop experience."""
 
     def __init__(self):
         super().__init__()
         self.jarvis = Jarvis()
+        self.sessions = SessionManager()
         self._command_thread = None
         self._command_worker = None
         self._diagnostics_window = None
@@ -74,12 +72,60 @@ class JarvisApp(JarvisHome):
         self.task_timer = QTimer(self)
         self.task_timer.timeout.connect(self.refresh_runtime_panels)
         self.task_timer.start(1200)
+
+        self._ensure_jarvis_workspace()
+        self.refresh_workspace()
         self.refresh_runtime_panels()
         self.refresh_today()
 
         scheduler = self.jarvis.router.brain.orchestrator.reminder_scheduler
         if scheduler is not None:
             scheduler.check_now()
+
+    def _ensure_jarvis_workspace(self):
+        """Register the current repository as the first real resumable workspace."""
+        project_root = Path(__file__).resolve().parents[1]
+        try:
+            workspace = self.sessions.register_workspace(
+                name="JARVIS OS",
+                root_path=str(project_root),
+                repo_url="https://github.com/thetarunsahu/Jarvis-OS",
+                preferred_app="vscode",
+            )
+            if self.sessions.store.latest_session(workspace["workspace_id"]) is None:
+                self.sessions.capture_session(
+                    workspace["workspace_id"],
+                    summary="JARVIS development workspace initialized.",
+                )
+        except Exception as error:
+            self.append_message("jarvis", f"Workspace continuity could not initialize: {error}")
+
+    def refresh_workspace(self):
+        plan = self.sessions.resume_plan()
+        if not plan:
+            self.workspace_title.setText("No saved workspace yet")
+            self.workspace_meta.setText("Register a project to make it resumable here.")
+            return
+
+        workspace = plan["workspace"]
+        session = plan.get("session") or {}
+        state = session.get("state") or {}
+
+        lines = [workspace["root_path"]]
+        branch = state.get("git_branch")
+        git_status = state.get("git_status")
+        if branch:
+            lines.append(f"Branch: {branch}")
+        if git_status:
+            changed = len([line for line in git_status.splitlines() if line.strip()])
+            lines.append(f"Working tree: {changed} change(s)")
+        else:
+            lines.append("Working tree: clean or not captured")
+        if session.get("summary"):
+            lines.append(session["summary"])
+
+        self.workspace_title.setText(workspace["name"])
+        self.workspace_meta.setText("\n".join(lines))
 
     @Slot(str)
     def execute_command(self, command):
@@ -120,6 +166,7 @@ class JarvisApp(JarvisHome):
         self.set_runtime_status("System ready", "idle")
         self.refresh_runtime_panels()
         self.refresh_today()
+        self.refresh_workspace()
 
     @Slot(str)
     def _command_failed(self, error):
@@ -236,6 +283,15 @@ class JarvisApp(JarvisHome):
     def closeEvent(self, event):
         try:
             self.task_timer.stop()
+            try:
+                latest = self.sessions.store.latest_workspace()
+                if latest:
+                    self.sessions.capture_session(
+                        latest["workspace_id"],
+                        summary="JARVIS closed; latest workspace state captured.",
+                    )
+            except Exception:
+                pass
             if self._diagnostics_window is not None:
                 self._diagnostics_window.close()
             self.jarvis.router.brain.shutdown()
