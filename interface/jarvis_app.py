@@ -4,7 +4,8 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from core.jarvis import Jarvis
-from interface.dashboard import InfoPanel, JarvisHUD
+from interface.dashboard import JarvisHUD
+from interface.home import JarvisHome
 
 
 class CommandWorker(QObject):
@@ -42,11 +43,12 @@ class JarvisEventBridge(QObject):
         self.task_failed.emit(str(event.payload.get("task_id", "")))
 
 
-class JarvisApp(JarvisHUD):
-    """Functional desktop shell wired to the JARVIS core.
+class JarvisApp(JarvisHome):
+    """Primary AI-first JARVIS desktop experience.
 
-    Long model calls run off the Qt UI thread so the HUD stays responsive.
-    JARVIS background tasks continue independently through TaskRuntime.
+    The old telemetry-heavy HUD remains available as a Diagnostics view, while
+    Home is now centered around conversation, current work, agent activity,
+    tasks and approvals.
     """
 
     def __init__(self):
@@ -54,35 +56,10 @@ class JarvisApp(JarvisHUD):
         self.jarvis = Jarvis()
         self._command_thread = None
         self._command_worker = None
+        self._diagnostics_window = None
 
-        self.response_panel = InfoPanel(
-            "JARVIS RESPONSE",
-            ["Ready. Ask JARVIS anything."],
-        )
-        self.response_panel.info.setWordWrap(True)
-        self.response_panel.setMaximumHeight(125)
-
-        self.task_panel = InfoPanel(
-            "ACTIVE TASKS",
-            ["No active tasks."],
-        )
-        self.task_panel.info.setWordWrap(True)
-        self.task_panel.setMaximumHeight(120)
-
-        self.approval_panel = InfoPanel(
-            "APPROVALS",
-            ["No pending approvals."],
-        )
-        self.approval_panel.info.setWordWrap(True)
-        self.approval_panel.setMaximumHeight(105)
-
-        root = self.layout()
-        insert_at = max(0, root.count() - 2)
-        root.insertWidget(insert_at, self.response_panel)
-        root.insertWidget(insert_at + 1, self.task_panel)
-        root.insertWidget(insert_at + 2, self.approval_panel)
-
-        self.input.returnPressed.connect(self.execute_command)
+        self.command_submitted.connect(self.execute_command)
+        self.diagnostics_requested.connect(self.open_diagnostics)
 
         self.event_bridge = JarvisEventBridge(self)
         event_bus = self.jarvis.router.brain.orchestrator.event_bus
@@ -98,23 +75,26 @@ class JarvisApp(JarvisHUD):
         self.task_timer.timeout.connect(self.refresh_runtime_panels)
         self.task_timer.start(1200)
         self.refresh_runtime_panels()
+        self.refresh_today()
 
         scheduler = self.jarvis.router.brain.orchestrator.reminder_scheduler
         if scheduler is not None:
             scheduler.check_now()
 
-    def execute_command(self):
-        command = self.input.text().strip()
+    @Slot(str)
+    def execute_command(self, command):
+        command = str(command or "").strip()
         if not command:
             return
 
         if self._command_thread and self._command_thread.isRunning():
-            self.status.setText("JARVIS IS PROCESSING")
+            self.append_message(
+                "jarvis",
+                "I'm still processing the previous request. Long-running work will move to background tasks when the task runtime accepts it.",
+            )
             return
 
-        self.input.clear()
-        self.status.setText("PROCESSING")
-        self.response_panel.set_lines([f"> {command}", "Working..."])
+        self.set_runtime_status("Thinking", "thinking")
 
         thread = QThread(self)
         worker = CommandWorker(self.jarvis, command)
@@ -136,14 +116,15 @@ class JarvisApp(JarvisHUD):
 
     @Slot(str)
     def _command_finished(self, response):
-        self.response_panel.set_lines([response])
-        self.status.setText("SYSTEM READY")
+        self.append_message("jarvis", response)
+        self.set_runtime_status("System ready", "idle")
         self.refresh_runtime_panels()
+        self.refresh_today()
 
     @Slot(str)
     def _command_failed(self, error):
-        self.response_panel.set_lines([f"Command failed: {error}"])
-        self.status.setText("ERROR")
+        self.append_message("jarvis", f"Command failed: {error}")
+        self.set_runtime_status("Error", "idle")
         self.refresh_runtime_panels()
 
     @Slot()
@@ -154,8 +135,9 @@ class JarvisApp(JarvisHUD):
     @Slot(str)
     def _show_reminder(self, text):
         QApplication.beep()
-        self.response_panel.set_lines(["REMINDER", text])
-        self.status.setText("REMINDER DUE")
+        self.append_message("jarvis", f"Reminder: {text}")
+        self.set_runtime_status("Reminder due", "idle")
+        self.refresh_today()
 
     @Slot(str)
     def _background_task_completed(self, task_id):
@@ -166,8 +148,8 @@ class JarvisApp(JarvisHUD):
         message = f"Background task {task.task_id[:8]} completed."
         if task.result:
             message += f"\n{task.result}"
-        self.response_panel.set_lines([message])
-        self.status.setText("TASK COMPLETE")
+        self.append_message("jarvis", message)
+        self.set_runtime_status("Task complete", "idle")
         QApplication.beep()
         self.refresh_runtime_panels()
 
@@ -177,13 +159,11 @@ class JarvisApp(JarvisHUD):
         if task is None or not task.background:
             return
 
-        self.response_panel.set_lines(
-            [
-                f"Background task {task.task_id[:8]} failed.",
-                task.error or "Unknown error.",
-            ]
+        self.append_message(
+            "jarvis",
+            f"Background task {task.task_id[:8]} failed.\n{task.error or 'Unknown error.'}",
         )
-        self.status.setText("TASK FAILED")
+        self.set_runtime_status("Task failed", "idle")
         QApplication.beep()
         self.refresh_runtime_panels()
 
@@ -193,33 +173,36 @@ class JarvisApp(JarvisHUD):
 
     def refresh_tasks(self):
         try:
-            tasks = self.jarvis.router.brain.list_tasks(limit=5)
+            tasks = self.jarvis.router.brain.list_tasks(limit=8)
         except Exception:
             return
 
         active = [
             task
             for task in tasks
-            if task.status.value
-            not in {"completed", "failed", "cancelled"}
+            if task.status.value not in {"completed", "failed", "cancelled"}
         ]
 
         if active:
-            lines = [
-                f"● {task.task_id[:8]}  {task.status.value.upper()}  {task.intent}"
+            task_lines = [
+                f"● {task.intent}  ·  {task.status.value.replace('_', ' ')}"
                 for task in active[:4]
             ]
+            agent_lines = [
+                f"{task.metadata.get('agent', 'JARVIS')}  ·  {task.intent}"
+                for task in active[:4]
+            ]
+            self.set_runtime_status("Background work active", "working")
         else:
             recent = tasks[:3]
-            if recent:
-                lines = [
-                    f"✓ {task.task_id[:8]}  {task.status.value.upper()}  {task.intent}"
-                    for task in recent
-                ]
-            else:
-                lines = ["No tasks recorded yet."]
+            task_lines = [
+                f"✓ {task.intent}  ·  {task.status.value.replace('_', ' ')}"
+                for task in recent
+            ]
+            agent_lines = []
 
-        self.task_panel.set_lines(lines)
+        self.set_tasks(task_lines)
+        self.set_agents(agent_lines)
 
     def refresh_approvals(self):
         try:
@@ -227,20 +210,34 @@ class JarvisApp(JarvisHUD):
         except Exception:
             return
 
-        if approvals:
-            lines = [
-                f"! {request['approval_id'][:8]}  {request['action']}  "
-                f"→ approve {request['approval_id'][:8]} / deny {request['approval_id'][:8]}"
-                for request in approvals
-            ]
-        else:
-            lines = ["No pending approvals."]
+        lines = [
+            f"! {request['action']}\n  approve {request['approval_id'][:8]} / deny {request['approval_id'][:8]}"
+            for request in approvals
+        ]
+        self.set_approvals(lines)
 
-        self.approval_panel.set_lines(lines)
+    def refresh_today(self):
+        try:
+            brief = self.jarvis.router.brain.daily_brief()
+        except Exception:
+            return
+        self.set_today(brief)
+
+    @Slot()
+    def open_diagnostics(self):
+        if self._diagnostics_window is None:
+            self._diagnostics_window = JarvisHUD()
+            self._diagnostics_window.setWindowTitle("JARVIS · Diagnostics")
+        else:
+            self._diagnostics_window.showFullScreen()
+            self._diagnostics_window.raise_()
+            self._diagnostics_window.activateWindow()
 
     def closeEvent(self, event):
         try:
             self.task_timer.stop()
+            if self._diagnostics_window is not None:
+                self._diagnostics_window.close()
             self.jarvis.router.brain.shutdown()
         finally:
             super().closeEvent(event)
@@ -249,7 +246,7 @@ class JarvisApp(JarvisHUD):
 def run_app():
     app = QApplication.instance() or QApplication(sys.argv)
     window = JarvisApp()
-    window.show()
+    window.showFullScreen()
     return app.exec()
 
 
