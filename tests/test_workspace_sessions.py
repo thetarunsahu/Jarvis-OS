@@ -112,6 +112,46 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(Path(launch_command[1]), self.project.resolve())
         self.assertFalse(popen.call_args.kwargs["shell"])
 
+    @patch("workspace.session_manager.subprocess.Popen")
+    @patch("workspace.session_manager.ApplicationTools.resolve", return_value=["code"])
+    def test_resume_vscode_restores_only_existing_captured_workspace_files(
+        self,
+        resolve,
+        popen,
+    ):
+        readme = self.project / "README.md"
+        source = self.project / "main.py"
+        readme.write_text("demo\n", encoding="utf-8")
+        source.write_text("print('ok')\n", encoding="utf-8")
+        outside = self.root / "outside.txt"
+        outside.write_text("nope\n", encoding="utf-8")
+
+        workspace = self.manager.register_workspace(
+            "Demo Project",
+            self.project,
+            preferred_app="vscode",
+        )
+        self.manager.capture_session(
+            workspace["workspace_id"],
+            state={
+                "open_files": [
+                    "README.md",
+                    "main.py",
+                    "missing.py",
+                    str(outside),
+                ]
+            },
+        )
+
+        result = self.manager.resume_workspace("Demo Project", launch=True)
+
+        self.assertTrue(result["ok"])
+        launch_command = popen.call_args.args[0]
+        self.assertEqual(Path(launch_command[1]), self.project.resolve())
+        restored = [Path(value) for value in launch_command[2:]]
+        self.assertEqual(restored, [readme.resolve(), source.resolve()])
+        self.assertIn("Restored 2 captured file(s)", result["message"])
+
     @patch("workspace.session_manager.ApplicationTools.resolve", return_value=None)
     def test_resume_workspace_reports_missing_preferred_app(self, resolve):
         workspace = self.manager.register_workspace(
