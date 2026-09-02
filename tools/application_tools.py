@@ -28,20 +28,21 @@ class ApplicationTools:
             "terminal": [["wt.exe"], ["powershell.exe"]],
             "powershell": [["powershell.exe"]],
             "vscode": [
-                ["code"],
                 [str(local_app_data / "Programs/Microsoft VS Code/Code.exe")],
                 [str(program_files / "Microsoft VS Code/Code.exe")],
+                ["code.exe"],
+                ["code"],
             ],
             "chrome": [
-                ["chrome.exe"],
                 [str(program_files / "Google/Chrome/Application/chrome.exe")],
                 [str(program_files_x86 / "Google/Chrome/Application/chrome.exe")],
                 [str(local_app_data / "Google/Chrome/Application/chrome.exe")],
+                ["chrome.exe"],
             ],
             "edge": [
-                ["msedge.exe"],
                 [str(program_files_x86 / "Microsoft/Edge/Application/msedge.exe")],
                 [str(program_files / "Microsoft/Edge/Application/msedge.exe")],
+                ["msedge.exe"],
             ],
         }
 
@@ -71,12 +72,41 @@ class ApplicationTools:
         return cls._posix_candidates()
 
     @staticmethod
-    def _command_exists(command):
+    def _resolved_command(command):
+        """Return an executable command safe for subprocess with shell=False.
+
+        On Windows, shutil.which("code") commonly resolves to code.cmd. Passing
+        the unresolved alias to CreateProcess can raise WinError 2, while a
+        batch file is not directly executable with shell=False. Prefer the real
+        executable and derive Code.exe from VS Code's bin/code.cmd when needed.
+        """
+        if not command:
+            return None
+
         executable = command[0]
         path = Path(executable)
         if path.is_absolute():
-            return path.exists() and path.is_file()
-        return shutil.which(executable) is not None
+            if path.exists() and path.is_file():
+                return [str(path), *command[1:]]
+            return None
+
+        resolved = shutil.which(executable)
+        if not resolved:
+            return None
+
+        resolved_path = Path(resolved)
+        if platform.system() == "Windows" and resolved_path.suffix.lower() in {".cmd", ".bat"}:
+            if resolved_path.stem.lower() == "code":
+                code_exe = resolved_path.parent.parent / "Code.exe"
+                if code_exe.exists() and code_exe.is_file():
+                    return [str(code_exe), *command[1:]]
+            return None
+
+        return [str(resolved_path), *command[1:]]
+
+    @classmethod
+    def _command_exists(cls, command):
+        return cls._resolved_command(command) is not None
 
     @classmethod
     def resolve(cls, name):
@@ -86,8 +116,9 @@ class ApplicationTools:
             return None
 
         for command in candidates:
-            if cls._command_exists(command):
-                return command
+            resolved = cls._resolved_command(command)
+            if resolved is not None:
+                return resolved
         return None
 
     @classmethod
