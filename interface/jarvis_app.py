@@ -101,14 +101,39 @@ class JarvisApp(JarvisHome):
                     summary="JARVIS development workspace initialized.",
                 )
             else:
-                # Refresh git/project/recent-file facts on every launch while
-                # retaining the user's continuity fields and prior summary.
                 self.sessions.capture_session(
                     workspace["workspace_id"],
                     summary=previous.get("summary") or "JARVIS workspace refreshed.",
                 )
         except Exception as error:
             self.append_message("jarvis", f"Workspace continuity could not initialize: {error}")
+
+    def _capture_latest_task_context(self, summary=None):
+        """Persist the latest JARVIS task alongside the current project session."""
+        workspace = self.sessions.store.latest_workspace()
+        if workspace is None:
+            return None
+
+        state = {}
+        try:
+            tasks = self.jarvis.router.brain.list_tasks(limit=1)
+        except Exception:
+            tasks = []
+
+        if tasks:
+            task = tasks[0]
+            state["last_task"] = task.raw_input or task.intent
+            state["last_task_status"] = task.status.value
+            if task.metadata.get("agent"):
+                state["last_task_agent"] = task.metadata["agent"]
+
+        previous = self.sessions.store.latest_session(workspace["workspace_id"]) or {}
+        effective_summary = summary or previous.get("summary") or "JARVIS workspace context updated."
+        return self.sessions.capture_session(
+            workspace["workspace_id"],
+            state=state,
+            summary=effective_summary,
+        )
 
     def refresh_workspace(self):
         plan = self.sessions.resume_plan()
@@ -124,8 +149,12 @@ class JarvisApp(JarvisHome):
         project_kind = state.get("project_kind")
         branch = state.get("git_branch")
         git_status = state.get("git_status")
-        open_files = state.get("open_files") or []
         recent_files = state.get("recent_files") or []
+        restorable_files = self.sessions._restorable_files(
+            Path(workspace["root_path"]), state
+        )
+        last_task = state.get("last_task")
+        last_task_status = state.get("last_task_status")
 
         if project_kind:
             details.append(f"Project  ·  {project_kind}")
@@ -136,19 +165,43 @@ class JarvisApp(JarvisHome):
             details.append(f"Working tree  ·  {changed} change(s)")
         else:
             details.append("Working tree  ·  clean / not captured")
-        if open_files:
-            details.append(f"Open files  ·  {len(open_files)} captured")
+        if restorable_files:
+            details.append(f"Restore files  ·  {len(restorable_files)} ready")
         if recent_files:
             details.append("Recent  ·  " + ", ".join(recent_files[:3]))
+        if last_task:
+            task_line = str(last_task)
+            if len(task_line) > 58:
+                task_line = task_line[:55] + "..."
+            suffix = f" ({last_task_status})" if last_task_status else ""
+            details.append(f"Last JARVIS task  ·  {task_line}{suffix}")
         if session.get("summary"):
             details.append(session["summary"])
 
+        resumable = bool(plan.get("root_exists"))
         self.set_workspace(
             workspace["name"],
             details,
-            resumable=bool(plan.get("root_exists")),
+            resumable=resumable,
             next_action=state.get("next_action"),
         )
+
+        app = str(workspace.get("preferred_app") or "vscode").upper()
+        branch_text = branch or "workspace"
+        restore_text = (
+            f"{len(restorable_files)} captured file(s)"
+            if restorable_files
+            else "project root"
+        )
+        next_action = state.get("next_action") or "Continue from the latest saved session."
+        self.workspace_next.setText(
+            f"Next: {next_action}\n\nResume package: {app} · {restore_text} · {branch_text}"
+        )
+        if resumable:
+            self.session_strip.setText(
+                f"SESSION CONTINUITY  •  READY  •  {app}  •  "
+                f"{len(restorable_files)} FILE(S)  •  {branch_text}"
+            )
 
     @Slot()
     def resume_latest_workspace(self):
@@ -164,7 +217,17 @@ class JarvisApp(JarvisHome):
 
         self.append_message("jarvis", result.get("message") or "Workspace resume finished.")
         if result.get("ok"):
+            plan = result.get("plan") or {}
+            session = plan.get("session") or {}
+            state = session.get("state") or {}
+            restored = self.sessions._restorable_files(
+                Path((plan.get("workspace") or {}).get("root_path", ".")), state
+            )
             self.greeting.setText("Workspace restored.")
+            if restored:
+                self.workspace_next.setText(
+                    f"Restored {len(restored)} captured file(s). Continue with the saved next action."
+                )
             self.set_runtime_status("Workspace ready", "idle")
         else:
             self.set_runtime_status("Resume failed", "idle")
@@ -208,6 +271,10 @@ class JarvisApp(JarvisHome):
     def _command_finished(self, response):
         self.append_message("jarvis", response)
         self.set_runtime_status("System ready", "idle")
+        try:
+            self._capture_latest_task_context()
+        except Exception:
+            pass
         self.refresh_runtime_panels()
         self.refresh_today()
         self.refresh_workspace()
@@ -242,7 +309,12 @@ class JarvisApp(JarvisHome):
         self.append_message("jarvis", message)
         self.set_runtime_status("Task complete", "idle")
         QApplication.beep()
+        try:
+            self._capture_latest_task_context()
+        except Exception:
+            pass
         self.refresh_runtime_panels()
+        self.refresh_workspace()
 
     @Slot(str)
     def _background_task_failed(self, task_id):
@@ -256,7 +328,12 @@ class JarvisApp(JarvisHome):
         )
         self.set_runtime_status("Task failed", "idle")
         QApplication.beep()
+        try:
+            self._capture_latest_task_context()
+        except Exception:
+            pass
         self.refresh_runtime_panels()
+        self.refresh_workspace()
 
     def refresh_runtime_panels(self):
         self.refresh_tasks()
@@ -328,12 +405,9 @@ class JarvisApp(JarvisHome):
         try:
             self.task_timer.stop()
             try:
-                latest = self.sessions.store.latest_workspace()
-                if latest:
-                    self.sessions.capture_session(
-                        latest["workspace_id"],
-                        summary="JARVIS closed; latest workspace state captured.",
-                    )
+                self._capture_latest_task_context(
+                    summary="JARVIS closed; latest workspace and task context captured."
+                )
             except Exception:
                 pass
             if self._diagnostics_window is not None:
