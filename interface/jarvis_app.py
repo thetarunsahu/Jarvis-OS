@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from core.jarvis import Jarvis
 from interface.dashboard import JarvisHUD
 from interface.home import JarvisHome
+from voice.voice_manager import VoiceManager
 from workspace.session_manager import SessionManager
 
 
@@ -24,6 +25,41 @@ class CommandWorker(QObject):
         try:
             response = self.jarvis.process(self.command)
             self.finished.emit(str(response))
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class VoiceListenWorker(QObject):
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, voice, duration=6):
+        super().__init__()
+        self.voice = voice
+        self.duration = duration
+
+    @Slot()
+    def run(self):
+        try:
+            self.finished.emit(str(self.voice.listen(duration=self.duration)))
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class SpeechWorker(QObject):
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, voice, text):
+        super().__init__()
+        self.voice = voice
+        self.text = text
+
+    @Slot()
+    def run(self):
+        try:
+            self.voice.speak(self.text)
+            self.finished.emit()
         except Exception as error:
             self.failed.emit(str(error))
 
@@ -52,13 +88,20 @@ class JarvisApp(JarvisHome):
         super().__init__()
         self.jarvis = Jarvis()
         self.sessions = SessionManager()
+        self.voice = VoiceManager()
+
         self._command_thread = None
         self._command_worker = None
+        self._voice_thread = None
+        self._voice_worker = None
+        self._speech_thread = None
+        self._speech_worker = None
         self._diagnostics_window = None
 
         self.command_submitted.connect(self.execute_command)
         self.diagnostics_requested.connect(self.open_diagnostics)
         self.workspace_resume_requested.connect(self.resume_latest_workspace)
+        self.listen_button.clicked.connect(self.start_voice_input)
 
         self.event_bridge = JarvisEventBridge(self)
         event_bus = self.jarvis.router.brain.orchestrator.event_bus
@@ -82,6 +125,13 @@ class JarvisApp(JarvisHome):
         scheduler = self.jarvis.router.brain.orchestrator.reminder_scheduler
         if scheduler is not None:
             scheduler.check_now()
+
+        # Product-level proof of life: JARVIS speaks shortly after the desktop
+        # event loop starts instead of remaining a silent dashboard.
+        QTimer.singleShot(450, self._speak_startup_greeting)
+
+    def _speak_startup_greeting(self):
+        self.speak_response("JARVIS online. Ready when you are.")
 
     def _ensure_jarvis_workspace(self):
         """Register and refresh the current repository as a resumable workspace."""
@@ -215,7 +265,9 @@ class JarvisApp(JarvisHome):
         except Exception as error:
             result = {"ok": False, "message": f"Workspace resume failed: {error}"}
 
-        self.append_message("jarvis", result.get("message") or "Workspace resume finished.")
+        message = result.get("message") or "Workspace resume finished."
+        self.append_message("jarvis", message)
+        self.speak_response(message)
         if result.get("ok"):
             plan = result.get("plan") or {}
             session = plan.get("session") or {}
@@ -233,6 +285,115 @@ class JarvisApp(JarvisHome):
             self.set_runtime_status("Resume failed", "idle")
 
         self.refresh_workspace()
+
+    @Slot()
+    def start_voice_input(self):
+        if self._voice_thread and self._voice_thread.isRunning():
+            return
+        if self._speech_thread and self._speech_thread.isRunning():
+            self.append_message("jarvis", "Let me finish speaking first.")
+            return
+        if self._command_thread and self._command_thread.isRunning():
+            self.append_message("jarvis", "I am still processing the previous request.")
+            return
+
+        self.listen_button.setText("Listening…")
+        self.listen_button.setEnabled(False)
+        self.set_runtime_status("Listening", "working")
+
+        thread = QThread(self)
+        worker = VoiceListenWorker(self.voice, duration=6)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._voice_recognized)
+        worker.failed.connect(self._voice_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_voice_worker)
+
+        self._voice_thread = thread
+        self._voice_worker = worker
+        thread.start()
+
+    @Slot(str)
+    def _voice_recognized(self, text):
+        command = str(text or "").strip()
+        self.listen_button.setText("Voice")
+        self.listen_button.setEnabled(True)
+
+        if not command:
+            message = "I didn't catch that. Try again."
+            self.append_message("jarvis", message)
+            self.set_runtime_status("System ready", "idle")
+            self.speak_response(message)
+            return
+
+        self.append_message("you", command)
+        self.set_runtime_status("Understood", "thinking")
+        self.execute_command(command)
+
+    @Slot(str)
+    def _voice_failed(self, error):
+        self.listen_button.setText("Voice")
+        self.listen_button.setEnabled(True)
+        self.append_message("jarvis", f"Voice input unavailable: {error}")
+        self.set_runtime_status("Voice unavailable", "idle")
+
+    @Slot()
+    def _clear_voice_worker(self):
+        self._voice_thread = None
+        self._voice_worker = None
+
+    def speak_response(self, text):
+        value = str(text or "").strip()
+        if not value:
+            return
+        if self._speech_thread and self._speech_thread.isRunning():
+            return
+
+        self.listen_button.setText("Speaking…")
+        self.listen_button.setEnabled(False)
+        self.set_runtime_status("Speaking", "working")
+
+        thread = QThread(self)
+        worker = SpeechWorker(self.voice, value)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._speech_finished)
+        worker.failed.connect(self._speech_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_speech_worker)
+
+        self._speech_thread = thread
+        self._speech_worker = worker
+        thread.start()
+
+    @Slot()
+    def _speech_finished(self):
+        self.listen_button.setText("Voice")
+        self.listen_button.setEnabled(True)
+        self.set_runtime_status("System ready", "idle")
+
+    @Slot(str)
+    def _speech_failed(self, error):
+        self.listen_button.setText("Voice")
+        self.listen_button.setEnabled(True)
+        self.set_runtime_status("System ready", "idle")
+        # Keep speech failure non-fatal. Surface it once in the conversation so
+        # the user can fix audio without losing the underlying JARVIS response.
+        self.append_message("jarvis", f"Speech output unavailable: {error}")
+
+    @Slot()
+    def _clear_speech_worker(self):
+        self._speech_thread = None
+        self._speech_worker = None
 
     @Slot(str)
     def execute_command(self, command):
@@ -270,7 +431,6 @@ class JarvisApp(JarvisHome):
     @Slot(str)
     def _command_finished(self, response):
         self.append_message("jarvis", response)
-        self.set_runtime_status("System ready", "idle")
         try:
             self._capture_latest_task_context()
         except Exception:
@@ -278,12 +438,15 @@ class JarvisApp(JarvisHome):
         self.refresh_runtime_panels()
         self.refresh_today()
         self.refresh_workspace()
+        self.speak_response(response)
 
     @Slot(str)
     def _command_failed(self, error):
-        self.append_message("jarvis", f"Command failed: {error}")
+        message = f"Command failed: {error}"
+        self.append_message("jarvis", message)
         self.set_runtime_status("Error", "idle")
         self.refresh_runtime_panels()
+        self.speak_response(message)
 
     @Slot()
     def _clear_command_worker(self):
@@ -293,9 +456,11 @@ class JarvisApp(JarvisHome):
     @Slot(str)
     def _show_reminder(self, text):
         QApplication.beep()
-        self.append_message("jarvis", f"Reminder: {text}")
+        message = f"Reminder: {text}"
+        self.append_message("jarvis", message)
         self.set_runtime_status("Reminder due", "idle")
         self.refresh_today()
+        self.speak_response(message)
 
     @Slot(str)
     def _background_task_completed(self, task_id):
@@ -315,6 +480,7 @@ class JarvisApp(JarvisHome):
             pass
         self.refresh_runtime_panels()
         self.refresh_workspace()
+        self.speak_response(message)
 
     @Slot(str)
     def _background_task_failed(self, task_id):
@@ -322,10 +488,11 @@ class JarvisApp(JarvisHome):
         if task is None or not task.background:
             return
 
-        self.append_message(
-            "jarvis",
-            f"Background task {task.task_id[:8]} failed.\n{task.error or 'Unknown error.'}",
+        message = (
+            f"Background task {task.task_id[:8]} failed.\n"
+            f"{task.error or 'Unknown error.'}"
         )
+        self.append_message("jarvis", message)
         self.set_runtime_status("Task failed", "idle")
         QApplication.beep()
         try:
@@ -334,6 +501,7 @@ class JarvisApp(JarvisHome):
             pass
         self.refresh_runtime_panels()
         self.refresh_workspace()
+        self.speak_response(message)
 
     def refresh_runtime_panels(self):
         self.refresh_tasks()
@@ -360,7 +528,8 @@ class JarvisApp(JarvisHome):
                 f"{task.metadata.get('agent', 'JARVIS')}  ·  {task.intent}"
                 for task in active[:4]
             ]
-            self.set_runtime_status("Background work active", "working")
+            if not (self._speech_thread and self._speech_thread.isRunning()):
+                self.set_runtime_status("Background work active", "working")
         else:
             recent = tasks[:3]
             task_lines = [
@@ -410,8 +579,17 @@ class JarvisApp(JarvisHome):
                 )
             except Exception:
                 pass
+
             if self._diagnostics_window is not None:
                 self._diagnostics_window.close()
+
+            # Avoid destroying a Qt thread while an audio worker is still
+            # finishing a short utterance/recording.
+            for thread in (self._voice_thread, self._speech_thread, self._command_thread):
+                if thread is not None and thread.isRunning():
+                    thread.quit()
+                    thread.wait(7000)
+
             self.jarvis.router.brain.shutdown()
         finally:
             super().closeEvent(event)
