@@ -101,9 +101,11 @@ class SessionManager:
                 "plan": plan,
             }
 
+        session = plan.get("session") or {}
+        session_state = session.get("state") or {}
         launch_result = None
         if launch:
-            launch_result = self._launch_workspace(workspace)
+            launch_result = self._launch_workspace(workspace, session_state)
             if not launch_result["ok"]:
                 return {
                     "ok": False,
@@ -151,9 +153,14 @@ class SessionManager:
             lines.append(f"Working tree changes: {changed}")
         if state.get("next_action"):
             lines.append(f"Next action: {state['next_action']}")
+        open_files = self._restorable_files(Path(workspace["root_path"]), state)
+        if open_files:
+            lines.append("Restore files: " + ", ".join(open_files[:5]))
         recent_files = state.get("recent_files") or []
         if recent_files:
             lines.append("Recent files: " + ", ".join(recent_files[:5]))
+        if state.get("last_task"):
+            lines.append(f"Last JARVIS task: {state['last_task']}")
         if session.get("summary"):
             lines.append(f"Last session: {session['summary']}")
         return "\n".join(lines)
@@ -221,9 +228,34 @@ class SessionManager:
         return result
 
     @staticmethod
-    def _launch_workspace(workspace):
+    def _restorable_files(root, state, limit=8):
+        """Return captured files that still exist inside the workspace root."""
+        result = []
+        try:
+            resolved_root = root.resolve()
+        except OSError:
+            return result
+
+        for item in (state or {}).get("open_files") or []:
+            if len(result) >= max(1, int(limit)):
+                break
+            candidate = Path(item)
+            if not candidate.is_absolute():
+                candidate = resolved_root / candidate
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(resolved_root)
+            except (OSError, ValueError):
+                continue
+            if resolved.exists() and resolved.is_file():
+                result.append(str(resolved))
+        return result
+
+    @classmethod
+    def _launch_workspace(cls, workspace, session_state=None):
         app = str(workspace.get("preferred_app") or "vscode").strip().lower()
-        root = str(Path(workspace["root_path"]).resolve())
+        root_path = Path(workspace["root_path"]).resolve()
+        root = str(root_path)
         command = ApplicationTools.resolve(app)
 
         if command is None:
@@ -233,6 +265,11 @@ class SessionManager:
             }
 
         launch_command = [*command, root]
+        restored_files = []
+        if app == "vscode":
+            restored_files = cls._restorable_files(root_path, session_state or {})
+            launch_command.extend(restored_files)
+
         try:
             subprocess.Popen(
                 launch_command,
@@ -248,9 +285,13 @@ class SessionManager:
                 "message": f"Could not launch {app}: {error}",
             }
 
+        message = f"Opened {workspace['name']} in {app}."
+        if restored_files:
+            message += f" Restored {len(restored_files)} captured file(s)."
         return {
             "ok": True,
-            "message": f"Opened {workspace['name']} in {app}.",
+            "message": message,
+            "restored_files": restored_files,
         }
 
     @staticmethod
