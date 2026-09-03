@@ -6,7 +6,7 @@ from core.approval_manager import ApprovalManager
 from core.event_bus import EventBus
 from core.orchestrator import Orchestrator
 from core.policy_engine import PermissionLevel
-from core.task import TaskStatus
+from core.task import Task, TaskStatus
 from files.file_index import FileIndex
 from productivity.accountability_engine import AccountabilityEngine
 from productivity.productivity_store import ProductivityStore
@@ -16,6 +16,19 @@ from tasks.task_store import TaskStore
 from tools.file_intelligence_tools import FileIntelligenceTools
 from tools.productivity_tools import ProductivityTools
 from tools.tool_registry import ToolRegistry, ToolSpec
+
+
+class SensitiveToolIntentEngine:
+    """Make this lifecycle test explicitly exercise a tool-required task."""
+
+    def analyze(self, user_input):
+        return Task(
+            raw_input=user_input,
+            intent="application",
+            complexity=1,
+            requires_tools=True,
+            background=False,
+        )
 
 
 class SensitiveToolModelRouter:
@@ -74,6 +87,7 @@ class ApprovalTaskLifecycleTests(unittest.TestCase):
         )
 
         self.orchestrator = Orchestrator(
+            intent_engine=SensitiveToolIntentEngine(),
             model_router=SensitiveToolModelRouter(),
             tool_registry=self.registry,
             event_bus=self.events,
