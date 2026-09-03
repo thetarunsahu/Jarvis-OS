@@ -1,3 +1,5 @@
+import re
+
 from core.brain import Brain
 from memory.memory_manager import MemoryManager
 from tools.file_intelligence_tools import FileIntelligenceTools
@@ -13,10 +15,28 @@ class CommandRouter:
         self.file_intelligence = FileIntelligenceTools()
         self.sessions = SessionManager()
 
-    def route(self, user_input):
-        command = user_input.lower().strip()
+    @staticmethod
+    def _normalize_direct_command(user_input):
+        """Normalize natural direct commands without invoking an AI model.
 
-        if command in ["hello", "hi", "hey"]:
+        Voice users naturally say things like "hey Jarvis", "Jarvis, time", or
+        "hello Jarvis". Treating those as model prompts makes basic desktop
+        control slower and unnecessarily dependent on an external provider.
+        """
+        command = str(user_input or "").lower().strip()
+        command = re.sub(r"[^a-z0-9'\s]", " ", command)
+        command = re.sub(r"\s+", " ", command).strip()
+
+        if command.startswith("jarvis "):
+            command = command[7:].strip()
+        if command.endswith(" jarvis"):
+            command = command[:-7].strip()
+        return command
+
+    def route(self, user_input):
+        command = self._normalize_direct_command(user_input)
+
+        if command in ["hello", "hi", "hey", "good morning", "good evening"]:
             return self.greeting()
 
         if command in ["help", "commands"]:
@@ -52,13 +72,13 @@ class CommandRouter:
             return self.list_workspaces()
 
         if command.startswith("resume workspace "):
-            return self.resume_workspace(user_input[17:].strip())
+            return self.resume_workspace(command[17:].strip())
 
         if command.startswith("resume project "):
-            return self.resume_workspace(user_input[15:].strip())
+            return self.resume_workspace(command[15:].strip())
 
         if command.startswith("continue project "):
-            return self.resume_workspace(user_input[17:].strip())
+            return self.resume_workspace(command[17:].strip())
 
         if command in ["list files", "files", "show files"]:
             return self.list_files()
@@ -70,31 +90,31 @@ class CommandRouter:
             return self.file_index_status()
 
         if command.startswith("find file "):
-            return self.search_files(user_input[10:].strip())
+            return self.search_files(command[10:].strip())
 
         if command.startswith("search files "):
-            return self.search_files(user_input[13:].strip())
+            return self.search_files(command[13:].strip())
 
         if command in ["tasks", "show tasks", "list tasks"]:
             return self.list_tasks()
 
         if command.startswith("task "):
-            return self.task_status(user_input[5:].strip())
+            return self.task_status(command[5:].strip())
 
         if command in ["approvals", "pending approvals"]:
             return self.list_approvals()
 
         if command.startswith("approve "):
-            return self.brain.resolve_approval(user_input[8:].strip(), approved=True)
+            return self.brain.resolve_approval(command[8:].strip(), approved=True)
 
         if command.startswith("deny "):
-            return self.brain.resolve_approval(user_input[5:].strip(), approved=False)
+            return self.brain.resolve_approval(command[5:].strip(), approved=False)
 
         if command == "memories":
             return self.memory.get_all()
 
         if command.startswith("remember "):
-            content = user_input[9:].strip()
+            content = str(user_input or "")[9:].strip()
 
             if "=" in content:
                 key, value = content.split("=", 1)
@@ -103,11 +123,11 @@ class CommandRouter:
             return "Use: remember key = value"
 
         if command.startswith("recall "):
-            key = user_input[7:].strip()
+            key = command[7:].strip()
             return self.memory.recall(key)
 
         if command.startswith("forget "):
-            key = user_input[7:].strip()
+            key = command[7:].strip()
             return self.memory.forget(key)
 
         return self.brain.respond(user_input)
