@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from core.task import Task
 from models.model_router import ModelRouter
@@ -87,6 +89,31 @@ class ModelRouterTests(unittest.TestCase):
 
         self.assertIn("tool calling support", result)
         self.assertNotIn("cloud-result", result)
+
+    def test_legacy_ai_provider_does_not_force_cloud(self):
+        with patch.dict(
+            os.environ,
+            {"AI_PROVIDER": "cloud"},
+            clear=False,
+        ):
+            os.environ.pop("JARVIS_PROVIDER", None)
+            router = ModelRouter(registry=FakeRegistry())
+
+        self.assertEqual(router.default_provider, "auto")
+
+    def test_disabled_provider_is_not_attempted(self):
+        with patch.dict(
+            os.environ,
+            {"JARVIS_DISABLED_PROVIDERS": "cloud"},
+            clear=False,
+        ):
+            router = ModelRouter(registry=FakeRegistry())
+
+        task = Task(raw_input="hello")
+        result = router.generate(task)
+
+        self.assertEqual(result, "local-result")
+        self.assertNotIn("cloud", [item["provider"] for item in task.metadata["routing_attempts"]])
 
 
 if __name__ == "__main__":
