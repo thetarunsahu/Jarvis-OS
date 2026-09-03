@@ -5,30 +5,30 @@ from providers.ai_provider import ProviderError
 
 
 class ModelRouter:
-    """Select an AI provider without coupling JARVIS core to a vendor.
-
-    Routing is capability-safe: a task that requires real tool execution is
-    never silently sent to a provider that cannot call JARVIS tools.
-    """
+    """Select an AI provider without coupling JARVIS core to a vendor."""
 
     def __init__(self, registry=None):
         self.registry = registry or ModelRegistry()
-        configured_default = os.getenv(
-            "JARVIS_PROVIDER",
-            os.getenv("AI_PROVIDER", "auto"),
-        )
-        self.default_provider = configured_default.lower().strip()
+        # JARVIS_PROVIDER is the only routing override. Old AI_PROVIDER values
+        # from early prototypes should not silently pin modern JARVIS to cloud.
+        self.default_provider = os.getenv("JARVIS_PROVIDER", "auto").lower().strip()
         self.routing_mode = os.getenv(
             "JARVIS_ROUTING_MODE",
             "local_first",
         ).lower().strip()
+        self.disabled_providers = {
+            item.strip().lower()
+            for item in os.getenv("JARVIS_DISABLED_PROVIDERS", "").split(",")
+            if item.strip()
+        }
 
     def _candidate_names(self, task, tools=None):
         preferred = task.preferred_provider or self.default_provider
-        names = self.registry.names()
+        names = [
+            name for name in self.registry.names()
+            if name not in self.disabled_providers
+        ]
 
-        # Actionable tasks must keep a real execution path. Returning a fluent
-        # answer from a provider without tool support would create false claims.
         if task.requires_tools and tools:
             names = [
                 name
@@ -42,31 +42,24 @@ class ModelRouter:
             return names
 
         if self.routing_mode == "cloud_first":
-            return sorted(
-                names,
-                key=lambda name: (
-                    self.registry.get(name).local,
-                    name,
-                ),
-            )
+            return sorted(names, key=lambda name: (self.registry.get(name).local, name))
 
         if self.routing_mode == "balanced" and task.complexity >= 4:
-            return sorted(
-                names,
-                key=lambda name: (
-                    self.registry.get(name).local,
-                    name,
-                ),
-            )
+            return sorted(names, key=lambda name: (self.registry.get(name).local, name))
 
-        # Default: privacy/cost-friendly local-first routing.
-        return sorted(
-            names,
-            key=lambda name: (
-                not self.registry.get(name).local,
-                name,
-            ),
-        )
+        return sorted(names, key=lambda name: (not self.registry.get(name).local, name))
+
+    @staticmethod
+    def _friendly_provider_error(name, error):
+        text = str(error)
+        lowered = text.lower()
+        if "credit" in lowered or "insufficient_quota" in lowered or "429" in lowered:
+            return f"{name}: unavailable (quota/credits)"
+        if "out of memory" in lowered or "unable to allocate" in lowered or "cuda" in lowered:
+            return f"{name}: local model did not fit available memory"
+        if "connection" in lowered or "connect" in lowered:
+            return f"{name}: service is not reachable"
+        return f"{name}: request failed"
 
     def generate(self, task, context=None, tools=None, executor=None):
         errors = []
@@ -84,9 +77,8 @@ class ModelRouter:
             try:
                 provider = self.registry.get(name)
             except Exception as error:
-                message = f"{name}: {error}"
-                errors.append(message)
-                attempts.append({"provider": name, "status": "registry_error"})
+                errors.append(f"{name}: registry error")
+                attempts.append({"provider": name, "status": "registry_error", "error": str(error)})
                 continue
 
             if not provider.is_available:
@@ -102,12 +94,12 @@ class ModelRouter:
                     executor=executor if provider.supports_tools else None,
                 )
             except ProviderError as error:
-                errors.append(f"{name}: {error}")
-                attempts.append({"provider": name, "status": "provider_error"})
+                errors.append(self._friendly_provider_error(name, error))
+                attempts.append({"provider": name, "status": "provider_error", "error": str(error)})
                 continue
             except Exception as error:
-                errors.append(f"{name}: unexpected error: {error}")
-                attempts.append({"provider": name, "status": "unexpected_error"})
+                errors.append(f"{name}: unexpected error")
+                attempts.append({"provider": name, "status": "unexpected_error", "error": str(error)})
                 continue
 
             attempts.append({"provider": name, "status": "success"})
@@ -121,6 +113,7 @@ class ModelRouter:
         task.metadata["routing_attempts"] = attempts
         details = "; ".join(errors) if errors else "no providers registered"
         return (
-            "JARVIS could not reach an AI provider. "
-            f"Provider status: {details}"
+            "JARVIS could not reach a usable AI model right now. "
+            f"{details}. Direct local commands such as time, system info, "
+            "workspace and file search still work."
         )
