@@ -24,7 +24,7 @@ def main():
         Jarvis().start()
         return
 
-    from interface.jarvis_app import run_app
+    from interface.operating_app import run_app
 
     raise SystemExit(run_app())
 
