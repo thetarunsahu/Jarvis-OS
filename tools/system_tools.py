@@ -3,10 +3,13 @@ from datetime import datetime
 
 
 class SystemTools:
-
     @staticmethod
     def get_time():
         return datetime.now().strftime("%I:%M:%S %p")
+
+    @staticmethod
+    def get_datetime():
+        return datetime.now().astimezone().isoformat()
 
     @staticmethod
     def get_system_info():
@@ -14,5 +17,5 @@ class SystemTools:
             "system": platform.system(),
             "release": platform.release(),
             "machine": platform.machine(),
-            "processor": platform.processor()
+            "processor": platform.processor(),
         }

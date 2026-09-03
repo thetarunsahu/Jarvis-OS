@@ -1,18 +1,38 @@
-from providers.ollama_provider import OllamaProvider
-from tools.tool_registry import ToolRegistry
+from core.context_builder import ContextBuilder
+from core.orchestrator import Orchestrator
 
 
 class Brain:
+    """JARVIS intelligence entry point.
 
-    def __init__(self):
+    Brain stays intentionally thin. Orchestrator owns task analysis, routing,
+    persistence, background execution, context, and model/tool coordination.
+    """
 
-        self.provider = OllamaProvider()
-        self.tools = ToolRegistry()
+    def __init__(self, orchestrator=None, memory_manager=None):
+        if orchestrator is not None:
+            self.orchestrator = orchestrator
+        else:
+            context_builder = ContextBuilder(memory_manager=memory_manager)
+            self.orchestrator = Orchestrator(context_builder=context_builder)
 
-    def respond(self, user_input):
+    def respond(self, user_input, context=None):
+        return self.orchestrator.handle(user_input, context=context)
 
-        return self.provider.generate(
-            user_input,
-            tools=self.tools.get_tool_definitions(),
-            executor=self.tools.execute
-        )
+    def get_task(self, task_id):
+        return self.orchestrator.get_task(task_id)
+
+    def list_tasks(self, limit=20, status=None):
+        return self.orchestrator.list_tasks(limit=limit, status=status)
+
+    def list_approvals(self, limit=20):
+        return self.orchestrator.list_approvals(limit=limit)
+
+    def resolve_approval(self, reference, approved):
+        return self.orchestrator.resolve_approval(reference, approved=approved)
+
+    def daily_brief(self):
+        return self.orchestrator.daily_brief()
+
+    def shutdown(self):
+        self.orchestrator.shutdown()

@@ -1,58 +1,143 @@
-from datetime import datetime
-from tools.system_tools import SystemTools
-from tools.file_tools import FileTools
-from memory.memory_manager import MemoryManager
+import re
+
 from core.brain import Brain
+from memory.memory_manager import MemoryManager
+from tools.file_intelligence_tools import FileIntelligenceTools
+from tools.file_tools import FileTools
+from tools.system_tools import SystemTools
+from workspace.session_manager import SessionManager
+
 
 class CommandRouter:
-    
     def __init__(self):
         self.memory = MemoryManager()
-        self.brain = Brain()
-        
-    def route(self, user_input):
-        command = user_input.lower().strip()
+        self.brain = Brain(memory_manager=self.memory)
+        self.file_intelligence = FileIntelligenceTools()
+        self.sessions = SessionManager()
 
-        if command in ["hello", "hi", "hey"]:
+    @staticmethod
+    def _normalize_direct_command(user_input):
+        """Normalize natural direct commands without invoking an AI model.
+
+        Voice users naturally say things like "hey Jarvis", "Jarvis, time", or
+        "hello Jarvis". Treating those as model prompts makes basic desktop
+        control slower and unnecessarily dependent on an external provider.
+        """
+        command = str(user_input or "").lower().strip()
+        command = re.sub(r"[^a-z0-9'\s]", " ", command)
+        command = re.sub(r"\s+", " ", command).strip()
+
+        if command.startswith("jarvis "):
+            command = command[7:].strip()
+        if command.endswith(" jarvis"):
+            command = command[:-7].strip()
+        return command
+
+    def route(self, user_input):
+        command = self._normalize_direct_command(user_input)
+
+        if command in ["hello", "hi", "hey", "good morning", "good evening"]:
             return self.greeting()
 
         if command in ["help", "commands"]:
             return self.help()
 
-        if command in ["time", "what time is it", "current time"]:
+        if command in [
+            "time",
+            "what time is it",
+            "what is time",
+            "what is the time",
+            "what's the time",
+            "whats the time",
+            "tell me the time",
+            "current time",
+            "time now",
+        ]:
             return self.current_time()
 
         if command in ["who are you", "what are you", "your name"]:
             return self.identity()
-        
+
         if command in ["system", "system info", "system information"]:
             return self.system_info()
-        
+
+        if command in ["daily brief", "accountability brief", "today brief"]:
+            return self.brain.daily_brief()
+
+        if command in [
+            "continue my project",
+            "continue project",
+            "resume project",
+            "resume workspace",
+            "continue my work",
+            "let's continue",
+            "lets continue",
+        ]:
+            return self.resume_workspace()
+
+        if command in ["workspace", "current workspace", "workspace status"]:
+            return self.workspace_status()
+
+        if command in ["workspaces", "projects", "recent projects", "recent work"]:
+            return self.list_workspaces()
+
+        if command.startswith("resume workspace "):
+            return self.resume_workspace(command[17:].strip())
+
+        if command.startswith("resume project "):
+            return self.resume_workspace(command[15:].strip())
+
+        if command.startswith("continue project "):
+            return self.resume_workspace(command[17:].strip())
+
         if command in ["list files", "files", "show files"]:
             return self.list_files()
-        
+
+        if command in ["index files", "refresh file index", "reindex files"]:
+            return self.index_files()
+
+        if command in ["file index", "file index status"]:
+            return self.file_index_status()
+
+        if command.startswith("find file "):
+            return self.search_files(command[10:].strip())
+
+        if command.startswith("search files "):
+            return self.search_files(command[13:].strip())
+
+        if command in ["tasks", "show tasks", "list tasks"]:
+            return self.list_tasks()
+
+        if command.startswith("task "):
+            return self.task_status(command[5:].strip())
+
+        if command in ["approvals", "pending approvals"]:
+            return self.list_approvals()
+
+        if command.startswith("approve "):
+            return self.brain.resolve_approval(command[8:].strip(), approved=True)
+
+        if command.startswith("deny "):
+            return self.brain.resolve_approval(command[5:].strip(), approved=False)
+
         if command == "memories":
             return self.memory.get_all()
-        
+
         if command.startswith("remember "):
-            content = user_input[9:].strip()
+            content = str(user_input or "")[9:].strip()
 
             if "=" in content:
                 key, value = content.split("=", 1)
-
-                return self.memory.remember(
-                    key.strip(),
-                    value.strip()
-                )
+                return self.memory.remember(key.strip(), value.strip())
 
             return "Use: remember key = value"
 
         if command.startswith("recall "):
-            key = user_input[7:].strip()
+            key = command[7:].strip()
             return self.memory.recall(key)
 
         if command.startswith("forget "):
-            key = user_input[7:].strip()
+            key = command[7:].strip()
             return self.memory.forget(key)
 
         return self.brain.respond(user_input)
@@ -65,14 +150,31 @@ class CommandRouter:
             "Currently available commands:\n"
             "  • hello\n"
             "  • time\n"
+            "  • system info\n"
+            "  • daily brief\n"
+            "  • workspace\n"
+            "  • workspaces\n"
+            "  • continue my project\n"
+            "  • resume project <name>\n"
+            "  • list files\n"
+            "  • index files\n"
+            "  • file index status\n"
+            "  • find file <description>\n"
+            "  • search files <query>\n"
+            "  • tasks\n"
+            "  • task <id>\n"
+            "  • approvals\n"
+            "  • approve <id>\n"
+            "  • deny <id>\n"
+            "  • remember key = value\n"
+            "  • recall <key>\n"
+            "  • forget <key>\n"
             "  • who are you\n"
-            "  • help\n"
             "  • exit"
         )
-    
+
     def system_info(self):
         info = SystemTools.get_system_info()
-
         return (
             f"System: {info['system']}\n"
             f"Release: {info['release']}\n"
@@ -84,8 +186,110 @@ class CommandRouter:
         return f"The current time is {SystemTools.get_time()}."
 
     def identity(self):
-        return "I am JARVIS, your personal AI system."
+        return "I am JARVIS, your personal AI operating environment."
+
+    def workspace_status(self):
+        return self.sessions.describe_resume()
+
+    def list_workspaces(self):
+        workspaces = self.sessions.store.list_workspaces(limit=10)
+        if not workspaces:
+            return "No JARVIS workspaces are registered yet."
+
+        lines = []
+        for workspace in workspaces:
+            lines.append(
+                f"- {workspace['name']}\n"
+                f"  {workspace['root_path']}\n"
+                f"  preferred app: {workspace.get('preferred_app') or 'not set'}"
+            )
+        return "Recent workspaces:\n" + "\n".join(lines)
+
+    def resume_workspace(self, reference=None):
+        result = self.sessions.resume_workspace(reference=reference, launch=True)
+        return result["message"]
 
     def list_files(self):
         return FileTools.list_files()
-    
+
+    def index_files(self):
+        result = self.file_intelligence.index_files()
+        roots = "\n".join(f"  - {root}" for root in result["roots"])
+        return (
+            f"File index refreshed. Indexed {result['indexed']} files "
+            f"({result['skipped']} skipped).\n"
+            f"FTS5: {'enabled' if result['fts'] else 'fallback search'}\n"
+            f"Roots:\n{roots}"
+        )
+
+    def file_index_status(self):
+        status = self.file_intelligence.file_index_status()
+        roots = "\n".join(f"  - {root}" for root in status["roots"])
+        return (
+            f"Indexed files: {status['files']}\n"
+            f"Indexed bytes: {status['bytes']}\n"
+            f"FTS5: {'enabled' if status['fts'] else 'fallback search'}\n"
+            f"Roots:\n{roots}"
+        )
+
+    def search_files(self, query):
+        if not query:
+            return "Use: find file <description>"
+
+        result = self.file_intelligence.search_files(query=query, limit=10)
+        matches = result["matches"]
+        if not matches:
+            return (
+                f"No indexed files matched '{query}'. "
+                "Run 'index files' if the index may be stale."
+            )
+
+        lines = []
+        for match in matches:
+            lines.append(f"- {match['name']}\n  {match['path']}")
+        return f"File matches for '{query}':\n" + "\n".join(lines)
+
+    def list_tasks(self):
+        tasks = self.brain.list_tasks(limit=10)
+        if not tasks:
+            return "No JARVIS tasks have been recorded yet."
+
+        lines = []
+        for task in tasks:
+            lines.append(
+                f"{task.task_id[:8]}  {task.status.value:<16} "
+                f"{task.intent:<12}  {task.raw_input[:60]}"
+            )
+        return "Recent tasks:\n" + "\n".join(lines)
+
+    def task_status(self, task_reference):
+        task = self.brain.get_task(task_reference)
+        if task is None:
+            return f"I could not find a unique task matching '{task_reference}'."
+
+        details = [
+            f"Task: {task.task_id}",
+            f"Intent: {task.intent}",
+            f"Status: {task.status.value}",
+            f"Background: {task.background}",
+        ]
+        if task.metadata.get("agent"):
+            details.append(f"Agent: {task.metadata['agent']}")
+        if task.result:
+            details.append(f"Result: {task.result}")
+        if task.error:
+            details.append(f"Error: {task.error}")
+        return "\n".join(details)
+
+    def list_approvals(self):
+        approvals = self.brain.list_approvals(limit=20)
+        if not approvals:
+            return "No pending approvals."
+
+        lines = []
+        for request in approvals:
+            lines.append(
+                f"{request['approval_id'][:8]}  {request['action']}  "
+                f"level={request['permission_level']}"
+            )
+        return "Pending approvals:\n" + "\n".join(lines)
