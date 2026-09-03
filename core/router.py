@@ -42,7 +42,17 @@ class CommandRouter:
         if command in ["help", "commands"]:
             return self.help()
 
-        if command in ["time", "what time is it", "current time"]:
+        if command in [
+            "time",
+            "what time is it",
+            "what is time",
+            "what is the time",
+            "what's the time",
+            "whats the time",
+            "tell me the time",
+            "current time",
+            "time now",
+        ]:
             return self.current_time()
 
         if command in ["who are you", "what are you", "your name"]:
